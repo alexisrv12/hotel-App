@@ -1,0 +1,6 @@
+{
+  "name": "Hotel Rivera",
+  "description": "Sistema completo de administración, recepción y gestión para Hotel Rivera",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
