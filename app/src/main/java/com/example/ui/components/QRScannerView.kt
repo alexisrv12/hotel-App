@@ -119,6 +119,8 @@ fun QRScannerView(
                         CompoundBarcodeView(ctx).apply {
                             val formats = listOf(BarcodeFormat.QR_CODE)
                             decoderFactory = DefaultDecoderFactory(formats)
+                            cameraSettings.isAutoFocusEnabled = true
+                            cameraSettings.isContinuousFocusEnabled = true
                             setStatusText("Encuadre el código QR de vinculación")
                             decodeContinuous(object : BarcodeCallback {
                                 override fun barcodeResult(result: BarcodeResult?) {

@@ -11,19 +11,25 @@ import android.os.VibratorManager
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.data.database.HotelDatabase
+import com.example.data.entities.AuditLogEntity
+import com.example.data.entities.ComandaEntity
 import com.example.data.entities.HousekeepingTaskEntity
 import com.example.data.entities.HotelSettingEntity
 import com.example.data.entities.InvoiceEntity
-import com.example.data.entities.AuditLogEntity
 import com.example.data.entities.ProductEntity
 import com.example.data.entities.RoomEntity
 import com.example.data.entities.RoomStatus
 import com.example.data.entities.SaleRecordEntity
 import com.example.data.entities.StayHistoryEntity
 import com.example.data.entities.SupplyEntity
+import com.example.data.entities.TableEntity
 import com.example.data.entities.TimeRateEntity
 import com.example.data.entities.UserEntity
 import com.example.data.repository.HotelRepository
+import com.example.data.repository.SessionDataStoreRepository
+import com.example.data.repository.UserSession
+import com.example.network.HotelLocalClient
+import com.example.network.HotelLocalServer
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -60,7 +66,8 @@ enum class Screen {
     GERENTE_USERS,
     GERENTE_BACKUP,
     GERENTE_DEVICE_LINKING,
-    GERENTE_HOUSEKEEPING
+    GERENTE_HOUSEKEEPING,
+    GERENTE_NETWORK_SYNC
 }
 
 sealed class AlertEvent {
@@ -71,10 +78,19 @@ sealed class AlertEvent {
 class HotelViewModel(application: Application) : AndroidViewModel(application) {
 
     private val repository: HotelRepository
+    private val sessionRepo = SessionDataStoreRepository(application)
     
     // UI Navigation State
     private val _currentScreen = MutableStateFlow(Screen.LOGIN)
     val currentScreen: StateFlow<Screen> = _currentScreen.asStateFlow()
+
+    // Persistent User Role and Device Authorization from DataStore
+    val userRole: StateFlow<String?>
+    val isDeviceAuthorized: StateFlow<Boolean>
+
+    // Local Wi-Fi Server and Sync Engine
+    val localServer: HotelLocalServer
+    val localClient: HotelLocalClient
 
     // Data Flows from Room
     val rooms: StateFlow<List<RoomEntity>>
@@ -89,6 +105,9 @@ class HotelViewModel(application: Application) : AndroidViewModel(application) {
     val auditLogs: StateFlow<List<AuditLogEntity>>
     val housekeepingTasks: StateFlow<List<HousekeepingTaskEntity>>
     val lowStockSupplies: StateFlow<List<SupplyEntity>>
+    val tables: StateFlow<List<TableEntity>>
+    val comandas: StateFlow<List<ComandaEntity>>
+    val activeComandas: StateFlow<List<ComandaEntity>>
 
     // Live Clock for Room Timers
     private val _currentTimeMillis = MutableStateFlow(System.currentTimeMillis())
@@ -137,6 +156,18 @@ class HotelViewModel(application: Application) : AndroidViewModel(application) {
         invoices = repository.allInvoices.toStateFlow(emptyList())
         auditLogs = repository.allAuditLogs.toStateFlow(emptyList())
         housekeepingTasks = repository.allHousekeepingTasks.toStateFlow(emptyList())
+        tables = repository.allTables.toStateFlow(emptyList())
+        comandas = repository.allComandas.toStateFlow(emptyList())
+        activeComandas = repository.activeComandas.toStateFlow(emptyList())
+
+        localServer = HotelLocalServer.getInstance(application, database.hotelDao(), database.deviceDao())
+        localClient = HotelLocalClient.getInstance(application, database.hotelDao(), sessionRepo)
+
+        // Automatically start the local Wi-Fi server
+        localServer.startServer(HotelLocalServer.DEFAULT_PORT)
+
+        userRole = sessionRepo.userRoleFlow.toStateFlow(null)
+        isDeviceAuthorized = sessionRepo.isDeviceAuthorizedFlow.toStateFlow(false)
 
         // Low stock supplies derived state flow
         val lowStockFlow = MutableStateFlow<List<SupplyEntity>>(emptyList())
@@ -281,6 +312,13 @@ class HotelViewModel(application: Application) : AndroidViewModel(application) {
             _activeUser.value = matchedUser.fullName.ifBlank { matchedUser.username }
             _currentScreen.value = Screen.MAIN
             _userMessage.value = "Sesión iniciada como ${matchedUser.fullName}"
+            viewModelScope.launch {
+                sessionRepo.saveSession(
+                    userRole = matchedUser.role.ifBlank { "RECEPCION" },
+                    userEmail = matchedUser.username,
+                    userName = matchedUser.fullName
+                )
+            }
             return true
         }
 
@@ -289,6 +327,13 @@ class HotelViewModel(application: Application) : AndroidViewModel(application) {
             _activeUser.value = "Gerencia Rivera Hotel"
             _currentScreen.value = Screen.MAIN
             _userMessage.value = "Sesión iniciada como Gerente"
+            viewModelScope.launch {
+                sessionRepo.saveSession(
+                    userRole = "GERENTE",
+                    userEmail = "riverahotel01@gmail.com",
+                    userName = "Gerencia Rivera Hotel"
+                )
+            }
             return true
         }
 
@@ -296,6 +341,13 @@ class HotelViewModel(application: Application) : AndroidViewModel(application) {
             _activeUser.value = "Gerencia Hotel Rivera"
             _currentScreen.value = Screen.MAIN
             _userMessage.value = "Sesión iniciada como Gerente"
+            viewModelScope.launch {
+                sessionRepo.saveSession(
+                    userRole = "GERENTE",
+                    userEmail = "gerencia@hotelrivera.com",
+                    userName = "Gerencia Hotel Rivera"
+                )
+            }
             return true
         }
 
@@ -303,6 +355,13 @@ class HotelViewModel(application: Application) : AndroidViewModel(application) {
             _activeUser.value = "Recepción Turno Principal"
             _currentScreen.value = Screen.MAIN
             _userMessage.value = "Sesión iniciada como Recepción"
+            viewModelScope.launch {
+                sessionRepo.saveSession(
+                    userRole = "RECEPCION",
+                    userEmail = "recepcion@hotelrivera.com",
+                    userName = "Recepción Turno Principal"
+                )
+            }
             return true
         }
 
@@ -314,11 +373,65 @@ class HotelViewModel(application: Application) : AndroidViewModel(application) {
         _activeUser.value = "Recepción Principal"
         _currentScreen.value = Screen.LOGIN
         _userMessage.value = "Sesión cerrada correctamente."
+        viewModelScope.launch {
+            sessionRepo.clearSession()
+        }
     }
 
-    // Navigation methods
+    // Navigation security layer: validates role and device authorization before granting access
     fun navigateTo(screen: Screen) {
         _pinError.value = null
+
+        val isGerenteSection = screen in listOf(
+            Screen.GERENTE_DASHBOARD,
+            Screen.GERENTE_ROOMS,
+            Screen.GERENTE_RATES,
+            Screen.GERENTE_TIMES,
+            Screen.GERENTE_HISTORY,
+            Screen.GERENTE_SUPPLIES,
+            Screen.GERENTE_SALES,
+            Screen.GERENTE_REPORTS,
+            Screen.GERENTE_INVOICES,
+            Screen.GERENTE_AUDIT,
+            Screen.GERENTE_SETTINGS,
+            Screen.GERENTE_USERS,
+            Screen.GERENTE_BACKUP,
+            Screen.GERENTE_DEVICE_LINKING,
+            Screen.GERENTE_HOUSEKEEPING,
+            Screen.GERENTE_NETWORK_SYNC
+        )
+
+        val isRecepcionSection = screen in listOf(
+            Screen.RECEPCION,
+            Screen.CHECKIN_FORM
+        )
+
+        if (isGerenteSection) {
+            val currentRole = userRole.value
+            val isAuthorized = isDeviceAuthorized.value
+            val isManager = currentRole.equals("GERENTE", ignoreCase = true) || currentRole.equals("ADMIN", ignoreCase = true)
+
+            // If user has not yet validated role or manager PIN, route to PIN confirmation dialog
+            if (!isManager && !isAuthorized) {
+                _currentScreen.value = Screen.GERENTE_PIN
+                return
+            }
+        }
+
+        if (isRecepcionSection) {
+            val currentRole = userRole.value
+            val isAuthorized = isDeviceAuthorized.value
+            val hasAccess = currentRole.equals("RECEPCION", ignoreCase = true) ||
+                    currentRole.equals("GERENTE", ignoreCase = true) ||
+                    currentRole.equals("ADMIN", ignoreCase = true) ||
+                    isAuthorized
+
+            if (!hasAccess && currentRole != null) {
+                _userMessage.value = "Acceso denegado: Dispositivo no autorizado para Recepción."
+                return
+            }
+        }
+
         _currentScreen.value = screen
     }
 
@@ -327,6 +440,11 @@ class HotelViewModel(application: Application) : AndroidViewModel(application) {
             val storedPin = repository.getSetting("manager_pin", "1234")
             if (enteredPin == storedPin || enteredPin == "1234") {
                 _pinError.value = null
+                sessionRepo.saveSession(
+                    userRole = "GERENTE",
+                    userEmail = "gerencia@hotelrivera.com",
+                    userName = "Gerencia Rivera Hotel"
+                )
                 _currentScreen.value = Screen.GERENTE_DASHBOARD
             } else {
                 _pinError.value = "PIN Incorrecto. Intente de nuevo."

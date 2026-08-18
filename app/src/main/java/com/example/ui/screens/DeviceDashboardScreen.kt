@@ -199,28 +199,7 @@ fun DeviceDashboardScreen(
                         }
                     }
 
-                    // Button to simulate an incoming device request for demo/testing
-                    IconButton(
-                        onClick = {
-                            val randomId = (1000..9999).random()
-                            val roles = listOf("Recepcionista 1", "Recepcionista 2", "Caja Noche", "Piso 2 Terminal")
-                            val randomUser = roles.random()
-                            viewModel.requestDeviceAccess(
-                                context = context,
-                                name = "Terminal-$randomId",
-                                userAssigned = randomUser,
-                                deviceId = "DEV-$randomId",
-                                ipAddress = "192.168.1.${(10..250).random()}"
-                            )
-                        },
-                        modifier = Modifier.testTag("simulate_device_request_button")
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Add,
-                            contentDescription = "Simular Solicitud de Dispositivo",
-                            tint = HotelNavy
-                        )
-                    }
+
                 },
                 colors = TopAppBarDefaults.topAppBarColors(
                     containerColor = MaterialTheme.colorScheme.surface

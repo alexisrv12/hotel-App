@@ -125,11 +125,19 @@ class DeviceCodeValidationHelper(
             return CodeValidationResult.Expired(expiredMinutesAgo = expiredMinutes)
         }
 
-        // Match expected token or decoded session format
+        // Match expected token or decoded session format or JSON QR payload
+        val isJsonQr = (trimmedInput.startsWith("{") && trimmedInput.endsWith("}")) &&
+                (trimmedInput.contains("role", ignoreCase = true) ||
+                 trimmedInput.contains("branch", ignoreCase = true) ||
+                 trimmedInput.contains("deviceId", ignoreCase = true) ||
+                 trimmedInput.contains("pin", ignoreCase = true) ||
+                 trimmedInput.contains("LINK_SESSION", ignoreCase = true))
+
         val matchesExpected = trimmedInput == trimmedExpected ||
                 trimmedInput.contains(trimmedExpected.take(12)) ||
                 DeviceLinkingUtils.isQrCodeValid(trimmedInput) ||
-                DeviceLinkingUtility.getInstance().decodeTemporarySessionQrString(trimmedInput) != null
+                DeviceLinkingUtility.getInstance().decodeTemporarySessionQrString(trimmedInput) != null ||
+                isJsonQr
 
         return if (matchesExpected) {
             CodeValidationResult.Valid

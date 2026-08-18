@@ -1,7 +1,10 @@
 package com.example.ui.screens
 
+import android.net.Uri
 import android.util.Patterns
 import android.widget.Toast
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -74,9 +77,12 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.compose.material.icons.filled.Image
+import com.example.ui.components.QRScannerView
 import com.example.ui.theme.HotelGold
 import com.example.ui.theme.HotelNavy
 import com.example.ui.viewmodel.DeviceLinkingViewModel
+import com.example.utils.QrCodeImageDecoder
 
 /**
  * First-Start Setup Wizard Screen (Asistente de Configuración para el Primer Inicio)
@@ -623,10 +629,29 @@ private fun Step3DeviceLinkingMethod(
     onConfirmQr: (qrToken: String) -> Unit,
     onBackToStep2: () -> Unit
 ) {
+    val context = LocalContext.current
     var selectedTab by remember { mutableStateOf(0) } // 0 = PIN, 1 = QR
     var pinInput by remember { mutableStateOf("") }
     var qrInput by remember { mutableStateOf("") }
     var isError by remember { mutableStateOf(false) }
+    var errorMessage by remember { mutableStateOf<String?>(null) }
+    var isCameraActive by remember { mutableStateOf(true) }
+
+    val imagePickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.GetContent()
+    ) { uri: Uri? ->
+        if (uri != null) {
+            val decoded = QrCodeImageDecoder.decodeQrFromUri(context, uri)
+            if (!decoded.isNullOrBlank()) {
+                qrInput = decoded
+                isError = false
+                onConfirmQr(decoded)
+            } else {
+                isError = true
+                errorMessage = "No se pudo detectar un código QR legible en la imagen seleccionada."
+            }
+        }
+    }
 
     Card(
         shape = RoundedCornerShape(16.dp),
@@ -701,6 +726,7 @@ private fun Step3DeviceLinkingMethod(
                     onClick = {
                         selectedTab = 0
                         isError = false
+                        errorMessage = null
                     },
                     text = {
                         Row(
@@ -719,14 +745,15 @@ private fun Step3DeviceLinkingMethod(
                     onClick = {
                         selectedTab = 1
                         isError = false
+                        errorMessage = null
                     },
                     text = {
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(6.dp)
                         ) {
-                            Icon(imageVector = Icons.Default.QrCode, contentDescription = null, modifier = Modifier.size(16.dp))
-                            Text("Código QR")
+                            Icon(imageVector = Icons.Default.QrCodeScanner, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Text("Cámara / QR")
                         }
                     },
                     modifier = Modifier.testTag("wizard_tab_qr")
@@ -737,7 +764,7 @@ private fun Step3DeviceLinkingMethod(
                 // Method 1: PIN Code
                 Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     Text(
-                        text = "Ingresa el código PIN de 6 dígitos que se muestra en el Módulo Gerente:",
+                        text = "Ingresa el código PIN de 6 dígitos activo provisto por el Módulo Gerente:",
                         style = MaterialTheme.typography.bodyMedium
                     )
 
@@ -747,10 +774,11 @@ private fun Step3DeviceLinkingMethod(
                             if (it.length <= 6) {
                                 pinInput = it
                                 isError = false
+                                errorMessage = null
                             }
                         },
                         label = { Text("Código PIN de 6 dígitos *") },
-                        placeholder = { Text("ej. $activeManagerPin") },
+                        placeholder = { Text("Ingresa el PIN") },
                         leadingIcon = {
                             Icon(imageVector = Icons.Default.Key, contentDescription = null)
                         },
@@ -762,17 +790,9 @@ private fun Step3DeviceLinkingMethod(
                             .testTag("wizard_pin_input")
                     )
 
-                    // Helper button to autofill current active Manager PIN
-                    TextButton(
-                        onClick = { pinInput = activeManagerPin },
-                        modifier = Modifier.align(Alignment.End)
-                    ) {
-                        Text("Usar PIN activo de Gerente ($activeManagerPin)", fontSize = 12.sp)
-                    }
-
                     if (isError) {
                         Text(
-                            text = "PIN no válido o no coincide con el generado en Gerente.",
+                            text = errorMessage ?: "PIN o código no válido",
                             color = MaterialTheme.colorScheme.error,
                             style = MaterialTheme.typography.bodySmall
                         )
@@ -782,6 +802,7 @@ private fun Step3DeviceLinkingMethod(
                         onClick = {
                             if (pinInput.isBlank()) {
                                 isError = true
+                                errorMessage = "PIN o código no válido"
                             } else {
                                 onConfirmPin(pinInput)
                             }
@@ -799,55 +820,46 @@ private fun Step3DeviceLinkingMethod(
                     }
                 }
             } else {
-                // Method 2: QR Code
+                // Method 2: Live Camera QR Scanner + Image Upload Fallback
                 Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    Text(
-                        text = "Escanear o ingresar el código QR generado desde el Módulo Gerente:",
-                        style = MaterialTheme.typography.bodyMedium
-                    )
+                    if (isCameraActive) {
+                        Card(
+                            shape = RoundedCornerShape(12.dp),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(240.dp)
+                        ) {
+                            QRScannerView(
+                                modifier = Modifier.fillMaxSize(),
+                                onQrCodeScanned = { scanned ->
+                                    qrInput = scanned
+                                    isError = false
+                                    onConfirmQr(scanned)
+                                },
+                                onCloseScanner = { isCameraActive = false }
+                            )
+                        }
+                    } else {
+                        OutlinedButton(
+                            onClick = { isCameraActive = true },
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Icon(imageVector = Icons.Default.QrCodeScanner, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("Activar Escáner de Cámara")
+                        }
+                    }
 
-                    Surface(
-                        shape = RoundedCornerShape(12.dp),
-                        color = MaterialTheme.colorScheme.surfaceVariant,
+                    // Fallback button to upload QR image
+                    OutlinedButton(
+                        onClick = { imagePickerLauncher.launch("image/*") },
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(vertical = 8.dp)
+                            .testTag("wizard_upload_qr_image_button")
                     ) {
-                        Column(
-                            modifier = Modifier.padding(16.dp),
-                            horizontalAlignment = Alignment.CenterHorizontally,
-                            verticalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.QrCodeScanner,
-                                contentDescription = null,
-                                tint = HotelNavy,
-                                modifier = Modifier.size(48.dp)
-                            )
-                            Text(
-                                text = "Lector de Código QR",
-                                style = MaterialTheme.typography.titleSmall,
-                                fontWeight = FontWeight.Bold
-                            )
-                            Text(
-                                text = "Apunta la cámara al QR del Gerente o presiona 'Simular Escaneo'",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                textAlign = TextAlign.Center
-                            )
-
-                            OutlinedButton(
-                                onClick = {
-                                    qrInput = activeManagerQr
-                                },
-                                shape = RoundedCornerShape(8.dp),
-                                modifier = Modifier.testTag("wizard_simulate_qr_scan")
-                            ) {
-                                Icon(imageVector = Icons.Default.QrCode, contentDescription = null, modifier = Modifier.size(16.dp))
-                                Spacer(modifier = Modifier.width(6.dp))
-                                Text("Simular Escaneo de QR Activo")
-                            }
-                        }
+                        Icon(imageVector = Icons.Default.Image, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("Subir imagen de QR")
                     }
 
                     OutlinedTextField(
@@ -855,9 +867,10 @@ private fun Step3DeviceLinkingMethod(
                         onValueChange = {
                             qrInput = it
                             isError = false
+                            errorMessage = null
                         },
                         label = { Text("Código QR Token *") },
-                        placeholder = { Text("LINK_SESSION|...") },
+                        placeholder = { Text("Escanear o ingresar token") },
                         leadingIcon = {
                             Icon(imageVector = Icons.Default.QrCode, contentDescription = null)
                         },
@@ -870,7 +883,7 @@ private fun Step3DeviceLinkingMethod(
 
                     if (isError) {
                         Text(
-                            text = "Código QR no válido o expirado.",
+                            text = errorMessage ?: "PIN o código no válido",
                             color = MaterialTheme.colorScheme.error,
                             style = MaterialTheme.typography.bodySmall
                         )
@@ -880,6 +893,7 @@ private fun Step3DeviceLinkingMethod(
                         onClick = {
                             if (qrInput.isBlank()) {
                                 isError = true
+                                errorMessage = "PIN o código no válido"
                             } else {
                                 onConfirmQr(qrInput)
                             }

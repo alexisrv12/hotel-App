@@ -38,6 +38,7 @@ import androidx.compose.material.icons.filled.Receipt
 import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Timer
+import androidx.compose.material.icons.filled.Wifi
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -99,7 +100,8 @@ fun GerenteDashboardScreen(
         ManagerMenuItem("Ajustes", "PIN, nombre hotel, moneda", Icons.Default.Settings, Screen.GERENTE_SETTINGS, HotelNavy),
         ManagerMenuItem("Usuarios", "Gestión de personal y accesos", Icons.Default.People, Screen.GERENTE_USERS, HotelGold),
         ManagerMenuItem("Respaldo", "Copia y restauración de datos", Icons.Default.Backup, Screen.GERENTE_BACKUP, HotelNavy),
-        ManagerMenuItem("Dispositivos", "Vinculación, historial y alertas", Icons.Default.Devices, Screen.GERENTE_DEVICE_LINKING, HotelGold)
+        ManagerMenuItem("Dispositivos", "Vinculación, historial y alertas", Icons.Default.Devices, Screen.GERENTE_DEVICE_LINKING, HotelGold),
+        ManagerMenuItem("Red y Sincronización", "Servidor Local Wi-Fi y Terminal", Icons.Default.Wifi, Screen.GERENTE_NETWORK_SYNC, HotelNavy)
     )
 
     Scaffold(

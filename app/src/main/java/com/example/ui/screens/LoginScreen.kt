@@ -1,6 +1,9 @@
 package com.example.ui.screens
 
+import android.net.Uri
 import android.widget.Toast
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -78,9 +81,12 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.compose.material3.CircularProgressIndicator
 import com.example.ui.HotelViewModel
+import com.example.ui.components.QRScannerView
 import com.example.ui.theme.HotelGold
 import com.example.ui.theme.HotelNavy
 import com.example.ui.viewmodel.DeviceLinkingViewModel
+import com.example.utils.QrCodeImageDecoder
+import androidx.compose.material.icons.filled.Image
 import com.example.ui.viewmodel.LoginViewModel
 
 /**
@@ -190,7 +196,7 @@ fun LoginScreen(
                         value = emailInput,
                         onValueChange = { loginViewModel.onEmailChange(it) },
                         label = { Text("Correo Electrónico *") },
-                        placeholder = { Text("ej. gerente@hotel.com o recepcion1@hotel.com") },
+                        placeholder = { Text("ej. usuario@hotel.com") },
                         leadingIcon = {
                             Icon(imageVector = Icons.Default.Email, contentDescription = "Email Icon", tint = HotelNavy)
                         },
@@ -363,33 +369,6 @@ fun LoginScreen(
                     }
                 }
             }
-
-            Spacer(modifier = Modifier.height(24.dp))
-
-            // Demo hint banner
-            Surface(
-                shape = RoundedCornerShape(12.dp),
-                color = MaterialTheme.colorScheme.surfaceVariant,
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Column(
-                    modifier = Modifier.padding(12.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally
-                ) {
-                    Text(
-                        text = "Credenciales por defecto:",
-                        style = MaterialTheme.typography.labelMedium,
-                        fontWeight = FontWeight.Bold,
-                        color = HotelNavy
-                    )
-                    Text(
-                        text = "• Gerente: riverahotel01@gmail.com / 12345678\n• Gerente: gerente@hotel.com / 1234\n• Recepción: recepcion1@hotel.com / 0000",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        textAlign = TextAlign.Center
-                    )
-                }
-            }
         }
     }
 
@@ -419,13 +398,32 @@ private fun DeviceLinkingOptionsDialog(
     onLinkingSuccess: () -> Unit
 ) {
     val context = LocalContext.current
-    val currentPin by deviceLinkingViewModel.currentPin.collectAsState()
-    val currentQrToken by deviceLinkingViewModel.currentQrSessionToken.collectAsState()
-
     var selectedOption by remember { mutableStateOf(0) } // 0 = QR, 1 = PIN
     var pinInput by remember { mutableStateOf("") }
     var qrInput by remember { mutableStateOf("") }
     var errorMessage by remember { mutableStateOf<String?>(null) }
+    var isCameraActive by remember { mutableStateOf(true) }
+
+    val imagePickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.GetContent()
+    ) { uri: Uri? ->
+        if (uri != null) {
+            val decoded = QrCodeImageDecoder.decodeQrFromUri(context, uri)
+            if (!decoded.isNullOrBlank()) {
+                qrInput = decoded
+                errorMessage = null
+                val success = deviceLinkingViewModel.completeLinkingWithQr(context, decoded)
+                if (success) {
+                    Toast.makeText(context, "Dispositivo vinculado correctamente con imagen QR.", Toast.LENGTH_SHORT).show()
+                    onLinkingSuccess()
+                } else {
+                    errorMessage = "El código QR en la imagen no es válido o ha expirado."
+                }
+            } else {
+                errorMessage = "No se pudo detectar un código QR legible en la imagen seleccionada."
+            }
+        }
+    }
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -462,15 +460,14 @@ private fun DeviceLinkingOptionsDialog(
                 modifier = Modifier
                     .fillMaxWidth()
                     .verticalScroll(rememberScrollState()),
-                verticalArrangement = Arrangement.spacedBy(16.dp)
+                verticalArrangement = Arrangement.spacedBy(14.dp)
             ) {
                 Text(
-                    text = "Selecciona el método generado desde el Módulo Gerente para autorizar este dispositivo:",
+                    text = "Selecciona el método de autorización dinámico generado en el Módulo Gerente:",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
 
-                // Dos opciones únicas: QR o PIN
                 TabRow(
                     selectedTabIndex = selectedOption,
                     containerColor = MaterialTheme.colorScheme.surfaceVariant,
@@ -487,8 +484,8 @@ private fun DeviceLinkingOptionsDialog(
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.spacedBy(6.dp)
                             ) {
-                                Icon(imageVector = Icons.Default.QrCode, contentDescription = null, modifier = Modifier.size(16.dp))
-                                Text("Código QR")
+                                Icon(imageVector = Icons.Default.QrCodeScanner, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Text("Cámara / QR")
                             }
                         },
                         modifier = Modifier.testTag("option_qr_tab")
@@ -514,48 +511,52 @@ private fun DeviceLinkingOptionsDialog(
                 }
 
                 if (selectedOption == 0) {
-                    // Opción 1: Escanear Código QR
-                    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                        Surface(
-                            shape = RoundedCornerShape(12.dp),
-                            color = MaterialTheme.colorScheme.surfaceVariant,
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Column(
-                                modifier = Modifier.padding(16.dp),
-                                horizontalAlignment = Alignment.CenterHorizontally,
-                                verticalArrangement = Arrangement.spacedBy(8.dp)
+                    // Opción 1: Escáner de Cámara Real y Fallback de Imagen
+                    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        if (isCameraActive) {
+                            Card(
+                                shape = RoundedCornerShape(14.dp),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(260.dp)
                             ) {
-                                Icon(
-                                    imageVector = Icons.Default.QrCodeScanner,
-                                    contentDescription = null,
-                                    tint = HotelNavy,
-                                    modifier = Modifier.size(40.dp)
-                                )
-                                Text(
-                                    text = "Escanear Código QR",
-                                    style = MaterialTheme.typography.titleSmall,
-                                    fontWeight = FontWeight.Bold
-                                )
-                                Text(
-                                    text = "Apunta la cámara al código QR mostrado en el módulo del Gerente.",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    textAlign = TextAlign.Center
-                                )
-
-                                OutlinedButton(
-                                    onClick = {
-                                        qrInput = currentQrToken
+                                QRScannerView(
+                                    modifier = Modifier.fillMaxSize(),
+                                    onQrCodeScanned = { scannedText ->
+                                        qrInput = scannedText
+                                        errorMessage = null
+                                        val success = deviceLinkingViewModel.completeLinkingWithQr(context, scannedText)
+                                        if (success) {
+                                            Toast.makeText(context, "Dispositivo vinculado inmediatamente.", Toast.LENGTH_SHORT).show()
+                                            onLinkingSuccess()
+                                        } else {
+                                            errorMessage = "Código QR no válido o expirado."
+                                        }
                                     },
-                                    shape = RoundedCornerShape(8.dp),
-                                    modifier = Modifier.testTag("simulate_qr_scan_button")
-                                ) {
-                                    Icon(imageVector = Icons.Default.QrCode, contentDescription = null, modifier = Modifier.size(16.dp))
-                                    Spacer(modifier = Modifier.width(6.dp))
-                                    Text("Usar QR Activo de Gerente", fontSize = 12.sp)
-                                }
+                                    onCloseScanner = { isCameraActive = false }
+                                )
                             }
+                        } else {
+                            OutlinedButton(
+                                onClick = { isCameraActive = true },
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Icon(imageVector = Icons.Default.QrCodeScanner, contentDescription = null, modifier = Modifier.size(18.dp))
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text("Activar Cámara en Vivo")
+                            }
+                        }
+
+                        // Botón de fallo manual "Subir imagen de QR"
+                        OutlinedButton(
+                            onClick = { imagePickerLauncher.launch("image/*") },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("upload_qr_image_button")
+                        ) {
+                            Icon(imageVector = Icons.Default.Image, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("Subir imagen de QR")
                         }
 
                         OutlinedTextField(
@@ -564,8 +565,8 @@ private fun DeviceLinkingOptionsDialog(
                                 qrInput = it
                                 errorMessage = null
                             },
-                            label = { Text("Token de Código QR *") },
-                            placeholder = { Text("LINK_SESSION|...") },
+                            label = { Text("Código QR / Token") },
+                            placeholder = { Text("Escanear o ingresar token") },
                             leadingIcon = {
                                 Icon(imageVector = Icons.Default.QrCode, contentDescription = null)
                             },
@@ -586,13 +587,13 @@ private fun DeviceLinkingOptionsDialog(
                         Button(
                             onClick = {
                                 if (qrInput.isBlank()) {
-                                    errorMessage = "Por favor ingrese o escanee el código QR."
+                                    errorMessage = "PIN o código no válido"
                                 } else {
                                     val success = deviceLinkingViewModel.completeLinkingWithQr(context, qrInput)
                                     if (success) {
                                         onLinkingSuccess()
                                     } else {
-                                        errorMessage = "El código QR escaneado no es válido."
+                                        errorMessage = "PIN o código no válido"
                                     }
                                 }
                             },
@@ -605,14 +606,14 @@ private fun DeviceLinkingOptionsDialog(
                         ) {
                             Icon(imageVector = Icons.Default.CheckCircle, contentDescription = null)
                             Spacer(modifier = Modifier.width(8.dp))
-                            Text("Autorizar Dispositivo con QR", fontWeight = FontWeight.Bold)
+                            Text("Vincular Dispositivo", fontWeight = FontWeight.Bold)
                         }
                     }
                 } else {
-                    // Opción 2: Ingresar Código PIN
+                    // Opción 2: Ingresar Código PIN Dinámico
                     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                         Text(
-                            text = "Ingresa el código PIN de 6 dígitos generado en el Módulo Gerente:",
+                            text = "Ingresa el PIN de 6 dígitos activo provisto por la administración:",
                             style = MaterialTheme.typography.bodyMedium
                         )
 
@@ -625,7 +626,7 @@ private fun DeviceLinkingOptionsDialog(
                                 }
                             },
                             label = { Text("Código PIN de 6 dígitos *") },
-                            placeholder = { Text("ej. $currentPin") },
+                            placeholder = { Text("Ingresa el PIN") },
                             leadingIcon = {
                                 Icon(imageVector = Icons.Default.Key, contentDescription = null)
                             },
@@ -635,13 +636,6 @@ private fun DeviceLinkingOptionsDialog(
                                 .fillMaxWidth()
                                 .testTag("pin_code_input")
                         )
-
-                        TextButton(
-                            onClick = { pinInput = currentPin },
-                            modifier = Modifier.align(Alignment.End)
-                        ) {
-                            Text("Usar PIN activo ($currentPin)", fontSize = 12.sp)
-                        }
 
                         if (errorMessage != null) {
                             Text(
@@ -654,13 +648,13 @@ private fun DeviceLinkingOptionsDialog(
                         Button(
                             onClick = {
                                 if (pinInput.isBlank()) {
-                                    errorMessage = "Por favor ingrese el código PIN."
+                                    errorMessage = "PIN o código no válido"
                                 } else {
                                     val success = deviceLinkingViewModel.completeLinkingWithPin(context, pinInput)
                                     if (success) {
                                         onLinkingSuccess()
                                     } else {
-                                        errorMessage = "El código PIN ingresado no es válido."
+                                        errorMessage = "PIN o código no válido"
                                     }
                                 }
                             },
@@ -673,7 +667,7 @@ private fun DeviceLinkingOptionsDialog(
                         ) {
                             Icon(imageVector = Icons.Default.CheckCircle, contentDescription = null)
                             Spacer(modifier = Modifier.width(8.dp))
-                            Text("Autorizar Dispositivo con PIN", fontWeight = FontWeight.Bold)
+                            Text("Vincular Dispositivo", fontWeight = FontWeight.Bold)
                         }
                     }
                 }
