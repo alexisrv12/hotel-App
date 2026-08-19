@@ -1343,7 +1343,7 @@ fun GerenteSettingsScreen(
     val settingsMap = remember(settingsList) { settingsList.associate { it.key to it.value } }
 
     var selectedTab by remember { mutableIntStateOf(0) }
-    val tabs = listOf("Datos del Hotel", "Facturas y Comprobantes", "Configuración del Hotel", "Red y Sincronización")
+    val tabs = listOf("Datos del Hotel", "Facturas y Comprobantes", "Configuración del Hotel")
 
     // --- 1. DATOS DEL HOTEL STATES ---
     var hotelName by remember(settingsMap) { mutableStateOf(settingsMap["hotel_name"] ?: "Hotel Rivera") }
@@ -2086,137 +2086,6 @@ fun GerenteSettingsScreen(
                                     Icon(Icons.Default.Save, contentDescription = null)
                                     Spacer(modifier = Modifier.width(8.dp))
                                     Text("Guardar Configuración del Hotel", fontWeight = FontWeight.Bold)
-                                }
-                            }
-                        }
-                    }
-
-                    3 -> {
-                        // ==========================================
-                        // TAB 4: RED Y SINCRONIZACIÓN (SERVIDOR LOCAL WI-FI)
-                        // ==========================================
-                        val localServer = viewModel.localServer
-                        val serverStatus by localServer.status.collectAsStateWithLifecycle()
-                        val serverIp by localServer.serverIp.collectAsStateWithLifecycle()
-                        val serverPort by localServer.serverPort.collectAsStateWithLifecycle()
-                        val connectedClients by localServer.connectedClients.collectAsStateWithLifecycle()
-                        val activeLinkingCode by localServer.activeLinkingCode.collectAsStateWithLifecycle()
-
-                        Card(
-                            modifier = Modifier.fillMaxWidth(),
-                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                            elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
-                        ) {
-                            Column(
-                                modifier = Modifier.padding(16.dp),
-                                verticalArrangement = Arrangement.spacedBy(14.dp)
-                            ) {
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.SpaceBetween,
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Row(verticalAlignment = Alignment.CenterVertically) {
-                                        Icon(Icons.Default.Wifi, contentDescription = null, tint = HotelNavy)
-                                        Spacer(modifier = Modifier.width(8.dp))
-                                        Text("Modo de Conexión", fontWeight = FontWeight.Bold, fontSize = 16.sp, color = HotelNavy)
-                                    }
-
-                                    Surface(
-                                        shape = RoundedCornerShape(12.dp),
-                                        color = StatusGreen.copy(alpha = 0.15f)
-                                    ) {
-                                        Text(
-                                            "Servidor Local (Wi-Fi)",
-                                            fontSize = 11.sp,
-                                            fontWeight = FontWeight.Bold,
-                                            color = StatusGreen,
-                                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
-                                        )
-                                    }
-                                }
-
-                                HorizontalDivider()
-
-                                Text(
-                                    "Esta terminal (Caja/Gerente) actúa como Servidor Central por red Wi-Fi local para vincular comanderos, cocina y recepciones secundarias sin internet.",
-                                    fontSize = 12.sp,
-                                    color = Color.Gray
-                                )
-
-                                Card(
-                                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
-                                    modifier = Modifier.fillMaxWidth()
-                                ) {
-                                    Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                                        Text("Dirección del Servidor Central:", fontSize = 12.sp, color = Color.Gray)
-                                        Text(
-                                            text = "http://$serverIp:$serverPort",
-                                            fontWeight = FontWeight.Bold,
-                                            fontSize = 16.sp,
-                                            color = HotelNavy
-                                        )
-                                        Text("Estado: ${serverStatus.name} • ${connectedClients.size} terminales conectadas", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
-                                    }
-                                }
-
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.spacedBy(10.dp)
-                                ) {
-                                    Button(
-                                        onClick = {
-                                            viewModel.navigateTo(Screen.GERENTE_NETWORK_SYNC)
-                                        },
-                                        modifier = Modifier.weight(1f),
-                                        colors = ButtonDefaults.buttonColors(containerColor = HotelNavy)
-                                    ) {
-                                        Icon(Icons.Default.Settings, contentDescription = null)
-                                        Spacer(modifier = Modifier.width(6.dp))
-                                        Text("Gestionar Servidor y QR")
-                                    }
-
-                                    OutlinedButton(
-                                        onClick = {
-                                            localServer.generateNewLinkingCode(role = "RECEPCION", validityMinutes = 10)
-                                            showSavedToast("¡Nuevo PIN de vinculación generado!")
-                                        },
-                                        modifier = Modifier.weight(1f)
-                                    ) {
-                                        Icon(Icons.Default.Refresh, contentDescription = null)
-                                        Spacer(modifier = Modifier.width(6.dp))
-                                        Text("Regenerar PIN")
-                                    }
-                                }
-
-                                if (activeLinkingCode != null) {
-                                    Surface(
-                                        shape = RoundedCornerShape(8.dp),
-                                        color = HotelNavy.copy(alpha = 0.05f),
-                                        modifier = Modifier.fillMaxWidth()
-                                    ) {
-                                        Row(
-                                            modifier = Modifier.padding(12.dp),
-                                            horizontalArrangement = Arrangement.SpaceBetween,
-                                            verticalAlignment = Alignment.CenterVertically
-                                        ) {
-                                            Column {
-                                                Text("PIN Dinámico Actual:", fontSize = 11.sp, color = Color.Gray)
-                                                Text(
-                                                    text = activeLinkingCode?.pin ?: "",
-                                                    fontWeight = FontWeight.ExtraBold,
-                                                    fontSize = 20.sp,
-                                                    color = HotelNavy
-                                                )
-                                            }
-                                            Text(
-                                                text = "Rol: ${activeLinkingCode?.role}",
-                                                fontSize = 12.sp,
-                                                fontWeight = FontWeight.Bold,
-                                                color = HotelGold
-                                            )
-                                        }
-                                    }
                                 }
                             }
                         }

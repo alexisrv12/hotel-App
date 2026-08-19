@@ -2,26 +2,15 @@ package com.example.data.repository
 
 import android.content.Context
 import android.util.Log
+import com.example.data.dao.DeviceDao
 import com.example.data.dao.HotelDao
-import com.example.data.entities.AuditLogEntity
-import com.example.data.entities.ComandaEntity
-import com.example.data.entities.ComandaStatus
 import com.example.data.entities.DeviceConnectionStatus
 import com.example.data.entities.DeviceEntity
-import com.example.data.entities.HotelSettingEntity
-import com.example.data.entities.OfflineSyncQueueEntity
 import com.example.data.entities.ProductEntity
 import com.example.data.entities.RealTimeConnectivityStatus
 import com.example.data.entities.RoomEntity
 import com.example.data.entities.RoomStatus
 import com.example.data.entities.SaleRecordEntity
-import com.example.data.entities.StayHistoryEntity
-import com.example.data.entities.SyncOperationStatus
-import com.example.data.entities.SyncOperationType
-import com.example.data.entities.TableEntity
-import com.example.data.entities.TableStatus
-import com.example.data.entities.TimeRateEntity
-import com.example.data.entities.UserEntity
 import com.google.firebase.FirebaseApp
 import com.google.firebase.FirebaseOptions
 import com.google.firebase.auth.FirebaseAuth
@@ -38,13 +27,8 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.tasks.await
-import org.json.JSONObject
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
 import java.util.UUID
 
 enum class CloudSyncStatus {
@@ -58,7 +42,6 @@ data class CloudSyncInfo(
     val hotelId: String = "hotel_rivera_main",
     val activeDeviceId: String = "",
     val activeRole: String = "RECEPCION",
-    val pendingQueueCount: Int = 0,
     val lastSyncTimestamp: Long = 0L,
     val errorMessage: String? = null
 )
@@ -75,13 +58,13 @@ data class LinkingCodeInfo(
 )
 
 /**
- * Central Cloud & Offline-First Repository using Cloud Firestore and Firebase Auth.
- * Connects all devices (Gerente, Recepción, Mesero, Cocina, Caja) across 4G/5G mobile networks
- * and any Wi-Fi networks in real-time, scoped securely by hotelId.
+ * Central Cloud & Offline-First Repository using Cloud Firestore and Firebase Auth for Hotel Rivera.
+ * Synchronizes rooms, sales, products, and authorized devices across terminals in real-time.
  */
 class HotelFirestoreRepository(
     private val context: Context,
     private val hotelDao: HotelDao,
+    private val deviceDao: DeviceDao,
     private val sessionRepo: SessionDataStoreRepository
 ) {
     companion object {
@@ -103,19 +86,15 @@ class HotelFirestoreRepository(
     val cloudDevices: StateFlow<List<DeviceEntity>> = _cloudDevices.asStateFlow()
 
     private val listeners = mutableListOf<ListenerRegistration>()
-    private var queueSyncJob: Job? = null
     private var heartbeatJob: Job? = null
 
     init {
         initializeFirebase()
-        observeLocalQueue()
-        startPeriodicSync()
     }
 
     private fun initializeFirebase() {
         try {
             if (FirebaseApp.getApps(context).isEmpty()) {
-                // Initialize default Firebase App if not already present
                 val options = FirebaseOptions.Builder()
                     .setApplicationId(context.packageName)
                     .setProjectId("hotel-rivera-cloud")
@@ -125,11 +104,10 @@ class HotelFirestoreRepository(
             }
 
             val db = FirebaseFirestore.getInstance()
-            // Enable offline persistence with unlimited cache
             val settings = FirebaseFirestoreSettings.Builder()
                 .setLocalCacheSettings(
                     PersistentCacheSettings.newBuilder()
-                        .setSizeBytes(PersistentCacheSettings.CACHE_SIZE_UNLIMITED)
+                        .setSizeBytes(FirebaseFirestoreSettings.CACHE_SIZE_UNLIMITED)
                         .build()
                 )
                 .build()
@@ -142,7 +120,7 @@ class HotelFirestoreRepository(
                 status = CloudSyncStatus.ONLINE_SYNCED,
                 errorMessage = null
             )
-            Log.i(TAG, "Firebase Firestore & Auth initialized successfully with offline cache.")
+            Log.i(TAG, "Firebase Firestore & Auth initialized successfully.")
             startRealtimeListeners()
             startDeviceHeartbeat()
         } catch (e: Exception) {
@@ -160,7 +138,7 @@ class HotelFirestoreRepository(
     }
 
     /**
-     * Starts Real-Time Snapshot Listeners for all collections scoped by hotelId.
+     * Starts Real-Time Snapshot Listeners for rooms, products, and devices.
      */
     fun startRealtimeListeners() {
         val hotelDoc = getHotelDocRef() ?: return
@@ -216,83 +194,7 @@ class HotelFirestoreRepository(
             }
             listeners.add(roomsListener)
 
-            // 2. Tables Listener (Mesas)
-            val tablesListener = hotelDoc.collection("tables").addSnapshotListener { snapshot, error ->
-                if (error != null) {
-                    Log.w(TAG, "Tables listener error: ${error.message}")
-                    return@addSnapshotListener
-                }
-                snapshot?.let { querySnapshot ->
-                    scope.launch {
-                        for (doc in querySnapshot.documents) {
-                            val tableNumber = doc.getString("tableNumber") ?: doc.id
-                            val status = doc.getString("status") ?: TableStatus.LIBRE
-                            val capacity = doc.getLong("capacity")?.toInt() ?: 4
-                            val currentWaiter = doc.getString("currentWaiter")
-                            val activeComandaId = doc.getLong("activeComandaId")
-                            val occupiedSinceMillis = doc.getLong("occupiedSinceMillis")
-
-                            val existing = hotelDao.getTableByNumber(tableNumber)
-                            val updated = (existing ?: TableEntity(
-                                tableNumber = tableNumber,
-                                capacity = capacity
-                            )).copy(
-                                status = status,
-                                capacity = capacity,
-                                currentWaiter = currentWaiter,
-                                activeComandaId = activeComandaId,
-                                occupiedSinceMillis = occupiedSinceMillis
-                            )
-                            hotelDao.insertTable(updated)
-                        }
-                    }
-                }
-            }
-            listeners.add(tablesListener)
-
-            // 3. Comandas Listener (Restaurante / Meseros / Cocina / Caja)
-            val comandasListener = hotelDoc.collection("comandas").addSnapshotListener { snapshot, error ->
-                if (error != null) {
-                    Log.w(TAG, "Comandas listener error: ${error.message}")
-                    return@addSnapshotListener
-                }
-                snapshot?.let { querySnapshot ->
-                    scope.launch {
-                        for (doc in querySnapshot.documents) {
-                            val id = doc.getLong("id") ?: (doc.id.hashCode().toLong().let { if (it < 0) -it else it })
-                            val comandaNumber = doc.getString("comandaNumber") ?: "CMD-${doc.id.take(4)}"
-                            val tableNumber = doc.getString("tableNumber") ?: "1"
-                            val waiterName = doc.getString("waiterName") ?: "Mesero"
-                            val status = doc.getString("status") ?: ComandaStatus.PENDIENTE
-                            val itemsJson = doc.getString("itemsJson") ?: "[]"
-                            val notes = doc.getString("notes")
-                            val totalAmount = doc.getDouble("totalAmount") ?: 0.0
-                            val createdAtMillis = doc.getLong("createdAtMillis") ?: System.currentTimeMillis()
-                            val updatedAtMillis = doc.getLong("updatedAtMillis") ?: System.currentTimeMillis()
-                            val roomId = doc.getLong("roomId")
-
-                            val comanda = ComandaEntity(
-                                id = id,
-                                comandaNumber = comandaNumber,
-                                tableNumber = tableNumber,
-                                waiterName = waiterName,
-                                status = status,
-                                itemsJson = itemsJson,
-                                notes = notes,
-                                totalAmount = totalAmount,
-                                createdAtMillis = createdAtMillis,
-                                updatedAtMillis = updatedAtMillis,
-                                roomId = roomId,
-                                isSynced = true
-                            )
-                            hotelDao.insertComanda(comanda)
-                        }
-                    }
-                }
-            }
-            listeners.add(comandasListener)
-
-            // 4. Products Listener (Menú / Productos)
+            // 2. Products Listener (Productos extras hotel)
             val productsListener = hotelDoc.collection("products").addSnapshotListener { snapshot, error ->
                 if (error != null) {
                     Log.w(TAG, "Products listener error: ${error.message}")
@@ -323,7 +225,7 @@ class HotelFirestoreRepository(
             }
             listeners.add(productsListener)
 
-            // 5. Linked Devices Listener (Dispositivos Autorizados)
+            // 3. Linked Devices Listener (Terminales autorizadas)
             val devicesListener = hotelDoc.collection("devices").addSnapshotListener { snapshot, error ->
                 if (error != null) {
                     Log.w(TAG, "Devices listener error: ${error.message}")
@@ -376,186 +278,58 @@ class HotelFirestoreRepository(
         }
     }
 
-    /**
-     * Periodically observes the local Room sync queue and syncs pending operations to Cloud Firestore.
-     */
-    private fun observeLocalQueue() {
-        scope.launch {
-            hotelDao.getPendingSyncCount().collect { count ->
-                _syncInfo.value = _syncInfo.value.copy(pendingQueueCount = count)
-            }
-        }
-    }
-
-    private fun startPeriodicSync() {
-        queueSyncJob?.cancel()
-        queueSyncJob = scope.launch {
-            while (true) {
-                kotlinx.coroutines.delay(10000L) // every 10 seconds
-                syncPendingQueueToCloud()
-            }
-        }
-    }
-
-    /**
-     * Processes pending operations from Room's OfflineSyncQueueEntity and uploads them to Firestore.
-     */
-    suspend fun syncPendingQueueToCloud() {
-        val hotelDoc = getHotelDocRef() ?: return
-        val pendingList = hotelDao.getPendingSyncOperationsList()
-        if (pendingList.isEmpty()) return
-
-        _syncInfo.value = _syncInfo.value.copy(status = CloudSyncStatus.SYNCING)
-
-        for (op in pendingList) {
-            try {
-                val json = JSONObject(op.payloadJson)
-                when (op.operationType) {
-                    SyncOperationType.ROOM_CHECKIN, SyncOperationType.ROOM_STATUS_UPDATE, SyncOperationType.ROOM_CHECKOUT -> {
-                        val roomNumber = json.optString("roomNumber", op.entityId)
-                        val roomData = mutableMapOf<String, Any?>()
-                        json.keys().forEach { k -> roomData[k] = json.get(k) }
-                        hotelDoc.collection("rooms").document(roomNumber).set(roomData, SetOptions.merge()).await()
-                    }
-                    SyncOperationType.COMANDA_CREATE, SyncOperationType.COMANDA_STATUS_UPDATE -> {
-                        val comandaId = op.entityId
-                        val comandaData = mutableMapOf<String, Any?>()
-                        json.keys().forEach { k -> comandaData[k] = json.get(k) }
-                        hotelDoc.collection("comandas").document(comandaId).set(comandaData, SetOptions.merge()).await()
-                    }
-                    SyncOperationType.TABLE_STATUS_UPDATE -> {
-                        val tableNumber = op.entityId
-                        val tableData = mutableMapOf<String, Any?>()
-                        json.keys().forEach { k -> tableData[k] = json.get(k) }
-                        hotelDoc.collection("tables").document(tableNumber).set(tableData, SetOptions.merge()).await()
-                    }
-                    SyncOperationType.PAYMENT_REGISTER -> {
-                        val saleId = op.entityId.ifEmpty { UUID.randomUUID().toString() }
-                        val saleData = mutableMapOf<String, Any?>()
-                        json.keys().forEach { k -> saleData[k] = json.get(k) }
-                        hotelDoc.collection("sales").document(saleId).set(saleData, SetOptions.merge()).await()
-                    }
-                }
-                // Mark complete and remove from queue
-                hotelDao.deleteSyncOperationByOperationId(op.operationId)
-            } catch (e: Exception) {
-                Log.w(TAG, "Failed syncing operation ${op.operationId}: ${e.message}")
-                hotelDao.updateSyncOperation(
-                    op.copy(
-                        retryCount = op.retryCount + 1,
-                        errorMessage = e.message
-                    )
-                )
-            }
-        }
-
-        _syncInfo.value = _syncInfo.value.copy(
-            status = CloudSyncStatus.ONLINE_SYNCED,
-            lastSyncTimestamp = System.currentTimeMillis()
-        )
-    }
-
-    /**
-     * Enqueues an offline-first operation locally and attempts immediate cloud push.
-     */
-    suspend fun enqueueAndSync(
-        operationType: String,
-        entityType: String,
-        entityId: String,
-        payload: JSONObject
-    ) {
-        val op = OfflineSyncQueueEntity(
-            operationId = UUID.randomUUID().toString(),
-            operationType = operationType,
-            entityType = entityType,
-            entityId = entityId,
-            payloadJson = payload.toString(),
-            timestampMillis = System.currentTimeMillis(),
-            status = SyncOperationStatus.PENDING
-        )
-        hotelDao.insertSyncOperation(op)
-        syncPendingQueueToCloud()
-    }
-
-    // --- CLOUD MUTATIONS ---
+    // --- HOTEL CLOUD MUTATIONS ---
 
     /**
      * Syncs a room state change to both Room and Firestore
      */
     suspend fun syncRoomUpdate(room: RoomEntity) {
         hotelDao.updateRoom(room)
-        val payload = JSONObject().apply {
-            put("id", room.id)
-            put("roomNumber", room.roomNumber)
-            put("status", room.status)
-            put("clientName", room.clientName ?: "")
-            put("clientDpi", room.clientDpi ?: "")
-            put("nightlyRate", room.nightlyRate)
-            put("priceCharged", room.priceCharged)
-            put("rateName", room.rateName ?: "")
-            put("checkInTimeMillis", room.checkInTimeMillis)
-            put("checkOutTimeMillis", room.checkOutTimeMillis)
-            put("notes", room.notes ?: "")
-            put("receptionistName", room.receptionistName ?: "")
+        try {
+            val hotelDoc = getHotelDocRef() ?: return
+            val roomData = mapOf(
+                "id" to room.id,
+                "roomNumber" to room.roomNumber,
+                "status" to room.status,
+                "clientName" to (room.clientName ?: ""),
+                "clientDpi" to (room.clientDpi ?: ""),
+                "nightlyRate" to room.nightlyRate,
+                "priceCharged" to room.priceCharged,
+                "rateName" to (room.rateName ?: ""),
+                "checkInTimeMillis" to room.checkInTimeMillis,
+                "checkOutTimeMillis" to room.checkOutTimeMillis,
+                "notes" to (room.notes ?: ""),
+                "receptionistName" to (room.receptionistName ?: "")
+            )
+            hotelDoc.collection("rooms").document(room.roomNumber).set(roomData, SetOptions.merge()).await()
+        } catch (e: Exception) {
+            Log.w(TAG, "Error syncing room update to Firestore: ${e.message}")
         }
-        enqueueAndSync(SyncOperationType.ROOM_STATUS_UPDATE, "ROOM", room.roomNumber, payload)
     }
 
     /**
-     * Syncs a Comanda creation or update across Mesero, Cocina, Caja, and Gerente.
-     */
-    suspend fun syncComanda(comanda: ComandaEntity) {
-        hotelDao.insertComanda(comanda)
-        val payload = JSONObject().apply {
-            put("id", comanda.id)
-            put("comandaNumber", comanda.comandaNumber)
-            put("tableNumber", comanda.tableNumber)
-            put("waiterName", comanda.waiterName)
-            put("status", comanda.status)
-            put("itemsJson", comanda.itemsJson)
-            put("notes", comanda.notes ?: "")
-            put("totalAmount", comanda.totalAmount)
-            put("createdAtMillis", comanda.createdAtMillis)
-            put("updatedAtMillis", comanda.updatedAtMillis)
-            put("roomId", comanda.roomId ?: 0L)
-        }
-        enqueueAndSync(SyncOperationType.COMANDA_CREATE, "COMANDA", comanda.id.toString(), payload)
-    }
-
-    /**
-     * Syncs a Table (Mesa) status update.
-     */
-    suspend fun syncTableStatus(table: TableEntity) {
-        hotelDao.updateTable(table)
-        val payload = JSONObject().apply {
-            put("id", table.id)
-            put("tableNumber", table.tableNumber)
-            put("capacity", table.capacity)
-            put("status", table.status)
-            put("activeComandaId", table.activeComandaId ?: 0L)
-            put("currentWaiter", table.currentWaiter ?: "")
-            put("occupiedSinceMillis", table.occupiedSinceMillis ?: 0L)
-        }
-        enqueueAndSync(SyncOperationType.TABLE_STATUS_UPDATE, "TABLE", table.tableNumber, payload)
-    }
-
-    /**
-     * Syncs a Sale record to Cashier/Caja and Gerencia.
+     * Syncs a Sale record to Cloud.
      */
     suspend fun syncSaleRecord(sale: SaleRecordEntity) {
         hotelDao.insertSaleRecord(sale)
-        val payload = JSONObject().apply {
-            put("id", sale.id)
-            put("productName", sale.productName)
-            put("quantity", sale.quantity)
-            put("unitPrice", sale.unitPrice)
-            put("totalPrice", sale.totalPrice)
-            put("profit", sale.profit)
-            put("timestampMillis", sale.timestampMillis)
-            put("registeredBy", sale.registeredBy)
-            put("paymentMethod", sale.paymentMethod)
+        try {
+            val hotelDoc = getHotelDocRef() ?: return
+            val saleId = sale.id.takeIf { it > 0 }?.toString() ?: UUID.randomUUID().toString()
+            val saleData = mapOf(
+                "id" to sale.id,
+                "productName" to sale.productName,
+                "quantity" to sale.quantity,
+                "unitPrice" to sale.unitPrice,
+                "totalPrice" to sale.totalPrice,
+                "profit" to sale.profit,
+                "timestampMillis" to sale.timestampMillis,
+                "registeredBy" to sale.registeredBy,
+                "paymentMethod" to sale.paymentMethod
+            )
+            hotelDoc.collection("sales").document(saleId).set(saleData, SetOptions.merge()).await()
+        } catch (e: Exception) {
+            Log.w(TAG, "Error syncing sale record: ${e.message}")
         }
-        enqueueAndSync(SyncOperationType.PAYMENT_REGISTER, "SALE", sale.id.toString(), payload)
     }
 
     // --- UNIVERSAL DEVICE LINKING (6-DIGIT PIN & QR) ---
@@ -582,18 +356,21 @@ class HotelFirestoreRepository(
 
         _activeLinkingCode.value = codeInfo
 
-        // Persist to Cloud Firestore under hotels/{hotelId}/linking_codes/{token}
-        getHotelDocRef()?.collection("linking_codes")?.document(token)?.set(
-            mapOf(
-                "pin" to pin,
-                "token" to token,
-                "hotelId" to currentHotelId,
-                "role" to role.uppercase(),
-                "createdAtMillis" to now,
-                "expiresAtMillis" to expiresAt,
-                "status" to "ACTIVE"
+        try {
+            getHotelDocRef()?.collection("linking_codes")?.document(token)?.set(
+                mapOf(
+                    "pin" to pin,
+                    "token" to token,
+                    "hotelId" to currentHotelId,
+                    "role" to role.uppercase(),
+                    "createdAtMillis" to now,
+                    "expiresAtMillis" to expiresAt,
+                    "status" to "ACTIVE"
+                )
             )
-        )
+        } catch (e: Exception) {
+            Log.w(TAG, "Error saving linking code in cloud: ${e.message}")
+        }
 
         // Save active code in local DataStore for session consistency
         sessionRepo.saveActiveLinkingPin(pin, expiresAt)
@@ -630,7 +407,6 @@ class HotelFirestoreRepository(
                     val assignedRole = validDoc.getString("role") ?: "RECEPCION"
                     val token = validDoc.id
 
-                    // Mark linking code as USED
                     validDoc.reference.update(
                         mapOf(
                             "status" to "USED",
@@ -639,7 +415,6 @@ class HotelFirestoreRepository(
                         )
                     )
 
-                    // Register Device in Cloud Firestore
                     hotelDoc.collection("devices").document(deviceId).set(
                         mapOf(
                             "deviceId" to deviceId,
@@ -652,7 +427,6 @@ class HotelFirestoreRepository(
                         )
                     )
 
-                    // Save session in local DataStore
                     sessionRepo.saveDeviceAuthorization(
                         deviceId = deviceId,
                         role = assignedRole,
@@ -694,17 +468,18 @@ class HotelFirestoreRepository(
      * Gerente revokes a device's authorization in real-time.
      */
     suspend fun revokeDevice(deviceId: String) {
-        val hotelDoc = getHotelDocRef() ?: return
+        val hotelDoc = getHotelDocRef()
         try {
-            hotelDoc.collection("devices").document(deviceId).update(
+            hotelDoc?.collection("devices")?.document(deviceId)?.update(
                 mapOf(
                     "isAuthorized" to false,
                     "connectionStatus" to DeviceConnectionStatus.DISCONNECTED
                 )
-            ).await()
-            hotelDao.deleteDeviceByDeviceId(deviceId)
+            )?.await()
+            deviceDao.deleteDeviceByDeviceId(deviceId)
         } catch (e: Exception) {
             Log.e(TAG, "Error revoking device $deviceId", e)
+            deviceDao.deleteDeviceByDeviceId(deviceId)
         }
     }
 
@@ -743,7 +518,6 @@ class HotelFirestoreRepository(
     fun cleanup() {
         listeners.forEach { it.remove() }
         listeners.clear()
-        queueSyncJob?.cancel()
         heartbeatJob?.cancel()
     }
 }

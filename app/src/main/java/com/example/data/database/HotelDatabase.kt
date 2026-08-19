@@ -9,20 +9,16 @@ import com.example.data.dao.DeviceDao
 import com.example.data.dao.HotelDao
 import com.example.data.dao.RoomDao
 import com.example.data.entities.AuditLogEntity
-import com.example.data.entities.ComandaEntity
 import com.example.data.entities.DeviceEntity
 import com.example.data.entities.HousekeepingTaskEntity
 import com.example.data.entities.HotelSettingEntity
 import com.example.data.entities.InvoiceEntity
-import com.example.data.entities.OfflineSyncQueueEntity
 import com.example.data.entities.ProductEntity
 import com.example.data.entities.RoomEntity
 import com.example.data.entities.RoomStatus
 import com.example.data.entities.SaleRecordEntity
 import com.example.data.entities.StayHistoryEntity
 import com.example.data.entities.SupplyEntity
-import com.example.data.entities.TableEntity
-import com.example.data.entities.TableStatus
 import com.example.data.entities.TimeRateEntity
 import com.example.data.entities.UserEntity
 import kotlinx.coroutines.CoroutineScope
@@ -42,12 +38,9 @@ import kotlinx.coroutines.launch
         InvoiceEntity::class,
         AuditLogEntity::class,
         DeviceEntity::class,
-        HousekeepingTaskEntity::class,
-        ComandaEntity::class,
-        TableEntity::class,
-        OfflineSyncQueueEntity::class
+        HousekeepingTaskEntity::class
     ],
-    version = 7,
+    version = 6,
     exportSchema = false
 )
 abstract class HotelDatabase : RoomDatabase() {
@@ -125,16 +118,6 @@ abstract class HotelDatabase : RoomDatabase() {
                     ProductEntity(name = "Agua Mineral 600ml", price = 8.0, costPrice = 4.0, stock = 20)
                 )
                 defaultProducts.forEach { dao.insertProduct(it) }
-
-                // Populate Default Restaurant Tables
-                val defaultTables = (1..8).map { i ->
-                    TableEntity(
-                        tableNumber = "Mesa $i",
-                        capacity = if (i % 2 == 0) 4 else 2,
-                        status = TableStatus.LIBRE
-                    )
-                }
-                dao.insertTables(defaultTables)
 
                 // Populate Settings
                 val defaultSettings = listOf(

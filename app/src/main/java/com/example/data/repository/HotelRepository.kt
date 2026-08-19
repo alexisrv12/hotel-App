@@ -2,7 +2,6 @@ package com.example.data.repository
 
 import com.example.data.dao.HotelDao
 import com.example.data.entities.AuditLogEntity
-import com.example.data.entities.ComandaEntity
 import com.example.data.entities.HousekeepingTaskEntity
 import com.example.data.entities.HotelSettingEntity
 import com.example.data.entities.InvoiceEntity
@@ -12,7 +11,6 @@ import com.example.data.entities.RoomStatus
 import com.example.data.entities.SaleRecordEntity
 import com.example.data.entities.StayHistoryEntity
 import com.example.data.entities.SupplyEntity
-import com.example.data.entities.TableEntity
 import com.example.data.entities.TimeRateEntity
 import com.example.data.entities.UserEntity
 import kotlinx.coroutines.flow.Flow
@@ -35,9 +33,6 @@ class HotelRepository(private val dao: HotelDao) {
     val allInvoices: Flow<List<InvoiceEntity>> = dao.getAllInvoices()
     val allAuditLogs: Flow<List<AuditLogEntity>> = dao.getAllAuditLogs()
     val allHousekeepingTasks: Flow<List<HousekeepingTaskEntity>> = dao.getAllHousekeepingTasks()
-    val allTables: Flow<List<TableEntity>> = dao.getAllTables()
-    val allComandas: Flow<List<ComandaEntity>> = dao.getAllComandas()
-    val activeComandas: Flow<List<ComandaEntity>> = dao.getActiveComandas()
 
     // --- AUDIT LOGGING ---
     suspend fun logAudit(username: String, action: String, details: String) {
@@ -413,17 +408,4 @@ class HotelRepository(private val dao: HotelDao) {
     }
 
     suspend fun deleteHousekeepingTask(id: Long) = dao.deleteHousekeepingTaskById(id)
-
-    // --- COMANDAS & RESTAURANT OPERATIONS ---
-    suspend fun insertComanda(comanda: ComandaEntity): Long = dao.insertComanda(comanda)
-    suspend fun updateComanda(comanda: ComandaEntity) = dao.updateComanda(comanda)
-    suspend fun updateComandaStatus(id: Long, status: String) = dao.updateComandaStatus(id, status)
-    suspend fun getComandaById(id: Long): ComandaEntity? = dao.getComandaById(id)
-    suspend fun deleteComanda(id: Long) = dao.deleteComandaById(id)
-
-    // --- TABLES OPERATIONS ---
-    suspend fun insertTable(table: TableEntity): Long = dao.insertTable(table)
-    suspend fun updateTable(table: TableEntity) = dao.updateTable(table)
-    suspend fun updateTableStatus(tableNumber: String, status: String, comandaId: Long? = null, waiter: String? = null) =
-        dao.updateTableStatus(tableNumber, status, comandaId, waiter)
 }

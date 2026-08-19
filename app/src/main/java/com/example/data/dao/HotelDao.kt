@@ -10,14 +10,11 @@ import com.example.data.entities.HousekeepingTaskEntity
 import com.example.data.entities.HotelSettingEntity
 import com.example.data.entities.InvoiceEntity
 import com.example.data.entities.AuditLogEntity
-import com.example.data.entities.ComandaEntity
-import com.example.data.entities.OfflineSyncQueueEntity
 import com.example.data.entities.ProductEntity
 import com.example.data.entities.RoomEntity
 import com.example.data.entities.SaleRecordEntity
 import com.example.data.entities.StayHistoryEntity
 import com.example.data.entities.SupplyEntity
-import com.example.data.entities.TableEntity
 import com.example.data.entities.TimeRateEntity
 import com.example.data.entities.UserEntity
 import kotlinx.coroutines.flow.Flow
@@ -196,73 +193,4 @@ interface HotelDao {
 
     @Query("DELETE FROM housekeeping_tasks WHERE id = :id")
     suspend fun deleteHousekeepingTaskById(id: Long)
-
-    // --- COMANDAS (RESTAURANTE / MESEROS / COCINA / CAJA) ---
-    @Query("SELECT * FROM comandas ORDER BY createdAtMillis DESC")
-    fun getAllComandas(): Flow<List<ComandaEntity>>
-
-    @Query("SELECT * FROM comandas WHERE status != 'COBRADO' AND status != 'CANCELADO' ORDER BY createdAtMillis ASC")
-    fun getActiveComandas(): Flow<List<ComandaEntity>>
-
-    @Query("SELECT * FROM comandas WHERE id = :id LIMIT 1")
-    suspend fun getComandaById(id: Long): ComandaEntity?
-
-    @Insert(onConflict = OnConflictStrategy.REPLACE)
-    suspend fun insertComanda(comanda: ComandaEntity): Long
-
-    @Insert(onConflict = OnConflictStrategy.REPLACE)
-    suspend fun insertComandas(comandas: List<ComandaEntity>)
-
-    @Update
-    suspend fun updateComanda(comanda: ComandaEntity)
-
-    @Query("UPDATE comandas SET status = :status, updatedAtMillis = :timestamp WHERE id = :id")
-    suspend fun updateComandaStatus(id: Long, status: String, timestamp: Long = System.currentTimeMillis())
-
-    @Query("DELETE FROM comandas WHERE id = :id")
-    suspend fun deleteComandaById(id: Long)
-
-    // --- TABLES (MESAS) ---
-    @Query("SELECT * FROM tables ORDER BY tableNumber ASC")
-    fun getAllTables(): Flow<List<TableEntity>>
-
-    @Query("SELECT * FROM tables WHERE id = :id LIMIT 1")
-    suspend fun getTableById(id: Long): TableEntity?
-
-    @Query("SELECT * FROM tables WHERE tableNumber = :tableNumber LIMIT 1")
-    suspend fun getTableByNumber(tableNumber: String): TableEntity?
-
-    @Insert(onConflict = OnConflictStrategy.REPLACE)
-    suspend fun insertTable(table: TableEntity): Long
-
-    @Insert(onConflict = OnConflictStrategy.REPLACE)
-    suspend fun insertTables(tables: List<TableEntity>)
-
-    @Update
-    suspend fun updateTable(table: TableEntity)
-
-    @Query("UPDATE tables SET status = :status, activeComandaId = :comandaId, currentWaiter = :waiter WHERE tableNumber = :tableNumber")
-    suspend fun updateTableStatus(tableNumber: String, status: String, comandaId: Long?, waiter: String?)
-
-    // --- OFFLINE SYNC QUEUE ---
-    @Query("SELECT * FROM offline_sync_queue WHERE status = 'PENDING' ORDER BY timestampMillis ASC")
-    fun getPendingSyncOperations(): Flow<List<OfflineSyncQueueEntity>>
-
-    @Query("SELECT * FROM offline_sync_queue WHERE status = 'PENDING' ORDER BY timestampMillis ASC")
-    suspend fun getPendingSyncOperationsList(): List<OfflineSyncQueueEntity>
-
-    @Query("SELECT COUNT(*) FROM offline_sync_queue WHERE status = 'PENDING'")
-    fun getPendingSyncCount(): Flow<Int>
-
-    @Insert(onConflict = OnConflictStrategy.REPLACE)
-    suspend fun insertSyncOperation(operation: OfflineSyncQueueEntity): Long
-
-    @Update
-    suspend fun updateSyncOperation(operation: OfflineSyncQueueEntity)
-
-    @Query("DELETE FROM offline_sync_queue WHERE operationId = :operationId")
-    suspend fun deleteSyncOperationByOperationId(operationId: String)
-
-    @Query("DELETE FROM offline_sync_queue WHERE status = 'COMPLETED'")
-    suspend fun deleteCompletedSyncOperations()
 }

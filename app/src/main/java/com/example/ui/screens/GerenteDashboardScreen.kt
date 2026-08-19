@@ -100,8 +100,7 @@ fun GerenteDashboardScreen(
         ManagerMenuItem("Ajustes", "PIN, nombre hotel, moneda", Icons.Default.Settings, Screen.GERENTE_SETTINGS, HotelNavy),
         ManagerMenuItem("Usuarios", "Gestión de personal y accesos", Icons.Default.People, Screen.GERENTE_USERS, HotelGold),
         ManagerMenuItem("Respaldo", "Copia y restauración de datos", Icons.Default.Backup, Screen.GERENTE_BACKUP, HotelNavy),
-        ManagerMenuItem("Dispositivos", "Vinculación, historial y alertas", Icons.Default.Devices, Screen.GERENTE_DEVICE_LINKING, HotelGold),
-        ManagerMenuItem("Red y Sincronización", "Servidor Local Wi-Fi y Terminal", Icons.Default.Wifi, Screen.GERENTE_NETWORK_SYNC, HotelNavy)
+        ManagerMenuItem("Dispositivos", "Vinculación, historial y alertas", Icons.Default.Devices, Screen.GERENTE_DEVICE_LINKING, HotelGold)
     )
 
     Scaffold(

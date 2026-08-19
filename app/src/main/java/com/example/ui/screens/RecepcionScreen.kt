@@ -40,7 +40,6 @@ import androidx.compose.material.icons.filled.Warning
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.window.Dialog
-import com.example.ui.components.ConnectionStatusChip
 import com.example.ui.components.QRScannerView
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -156,12 +155,6 @@ fun RecepcionScreen(
                     }
                 },
                 actions = {
-                    val clientSyncInfo by viewModel.localClient.syncInfo.collectAsStateWithLifecycle()
-                    ConnectionStatusChip(
-                        syncInfo = clientSyncInfo,
-                        onSyncNow = { viewModel.localClient.triggerSync() }
-                    )
-                    Spacer(modifier = Modifier.width(4.dp))
                     IconButton(
                         onClick = onNavigateToCheckInForm,
                         modifier = Modifier.testTag("new_checkin_form_top_button")

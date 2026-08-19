@@ -12,7 +12,6 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.data.database.HotelDatabase
 import com.example.data.entities.AuditLogEntity
-import com.example.data.entities.ComandaEntity
 import com.example.data.entities.HousekeepingTaskEntity
 import com.example.data.entities.HotelSettingEntity
 import com.example.data.entities.InvoiceEntity
@@ -22,14 +21,11 @@ import com.example.data.entities.RoomStatus
 import com.example.data.entities.SaleRecordEntity
 import com.example.data.entities.StayHistoryEntity
 import com.example.data.entities.SupplyEntity
-import com.example.data.entities.TableEntity
 import com.example.data.entities.TimeRateEntity
 import com.example.data.entities.UserEntity
 import com.example.data.repository.HotelRepository
 import com.example.data.repository.SessionDataStoreRepository
 import com.example.data.repository.UserSession
-import com.example.network.HotelLocalClient
-import com.example.network.HotelLocalServer
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -66,8 +62,7 @@ enum class Screen {
     GERENTE_USERS,
     GERENTE_BACKUP,
     GERENTE_DEVICE_LINKING,
-    GERENTE_HOUSEKEEPING,
-    GERENTE_NETWORK_SYNC
+    GERENTE_HOUSEKEEPING
 }
 
 sealed class AlertEvent {
@@ -88,10 +83,6 @@ class HotelViewModel(application: Application) : AndroidViewModel(application) {
     val userRole: StateFlow<String?>
     val isDeviceAuthorized: StateFlow<Boolean>
 
-    // Local Wi-Fi Server and Sync Engine
-    val localServer: HotelLocalServer
-    val localClient: HotelLocalClient
-
     // Data Flows from Room
     val rooms: StateFlow<List<RoomEntity>>
     val timeRates: StateFlow<List<TimeRateEntity>>
@@ -105,9 +96,6 @@ class HotelViewModel(application: Application) : AndroidViewModel(application) {
     val auditLogs: StateFlow<List<AuditLogEntity>>
     val housekeepingTasks: StateFlow<List<HousekeepingTaskEntity>>
     val lowStockSupplies: StateFlow<List<SupplyEntity>>
-    val tables: StateFlow<List<TableEntity>>
-    val comandas: StateFlow<List<ComandaEntity>>
-    val activeComandas: StateFlow<List<ComandaEntity>>
 
     // Live Clock for Room Timers
     private val _currentTimeMillis = MutableStateFlow(System.currentTimeMillis())
@@ -156,15 +144,6 @@ class HotelViewModel(application: Application) : AndroidViewModel(application) {
         invoices = repository.allInvoices.toStateFlow(emptyList())
         auditLogs = repository.allAuditLogs.toStateFlow(emptyList())
         housekeepingTasks = repository.allHousekeepingTasks.toStateFlow(emptyList())
-        tables = repository.allTables.toStateFlow(emptyList())
-        comandas = repository.allComandas.toStateFlow(emptyList())
-        activeComandas = repository.activeComandas.toStateFlow(emptyList())
-
-        localServer = HotelLocalServer.getInstance(application, database.hotelDao(), database.deviceDao())
-        localClient = HotelLocalClient.getInstance(application, database.hotelDao(), sessionRepo)
-
-        // Automatically start the local Wi-Fi server
-        localServer.startServer(HotelLocalServer.DEFAULT_PORT)
 
         userRole = sessionRepo.userRoleFlow.toStateFlow(null)
         isDeviceAuthorized = sessionRepo.isDeviceAuthorizedFlow.toStateFlow(false)
@@ -397,8 +376,7 @@ class HotelViewModel(application: Application) : AndroidViewModel(application) {
             Screen.GERENTE_USERS,
             Screen.GERENTE_BACKUP,
             Screen.GERENTE_DEVICE_LINKING,
-            Screen.GERENTE_HOUSEKEEPING,
-            Screen.GERENTE_NETWORK_SYNC
+            Screen.GERENTE_HOUSEKEEPING
         )
 
         val isRecepcionSection = screen in listOf(

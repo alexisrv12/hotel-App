@@ -38,7 +38,6 @@ import com.example.ui.screens.GuestCheckInScreen
 import com.example.ui.screens.LinkDeviceScreen
 import com.example.ui.screens.LoginScreen
 import com.example.ui.screens.MainScreen
-import com.example.ui.screens.NetworkSyncSettingsScreen
 import com.example.ui.screens.RecepcionScreen
 import com.example.ui.theme.HotelRiveraTheme
 
@@ -259,13 +258,6 @@ fun HotelRiveraApp(viewModel: HotelViewModel) {
             Screen.GERENTE_DEVICE_LINKING -> {
                 DeviceDashboardScreen(
                     onBackToManagerMenu = { viewModel.navigateTo(Screen.GERENTE_DASHBOARD) }
-                )
-            }
-
-            Screen.GERENTE_NETWORK_SYNC -> {
-                NetworkSyncSettingsScreen(
-                    hotelViewModel = viewModel,
-                    onBack = { viewModel.navigateTo(Screen.GERENTE_DASHBOARD) }
                 )
             }
         }
