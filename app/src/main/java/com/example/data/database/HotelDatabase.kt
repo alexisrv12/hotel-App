@@ -8,6 +8,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
 import com.example.data.dao.DeviceDao
 import com.example.data.dao.HotelDao
 import com.example.data.dao.RoomDao
+import com.example.data.dao.SharedAppStateDao
 import com.example.data.entities.AuditLogEntity
 import com.example.data.entities.DeviceEntity
 import com.example.data.entities.HousekeepingTaskEntity
@@ -17,6 +18,7 @@ import com.example.data.entities.ProductEntity
 import com.example.data.entities.RoomEntity
 import com.example.data.entities.RoomStatus
 import com.example.data.entities.SaleRecordEntity
+import com.example.data.entities.SharedAppStateBackupEntity
 import com.example.data.entities.StayHistoryEntity
 import com.example.data.entities.SupplyEntity
 import com.example.data.entities.TimeRateEntity
@@ -38,9 +40,10 @@ import kotlinx.coroutines.launch
         InvoiceEntity::class,
         AuditLogEntity::class,
         DeviceEntity::class,
-        HousekeepingTaskEntity::class
+        HousekeepingTaskEntity::class,
+        SharedAppStateBackupEntity::class
     ],
-    version = 6,
+    version = 7,
     exportSchema = false
 )
 abstract class HotelDatabase : RoomDatabase() {
@@ -48,6 +51,7 @@ abstract class HotelDatabase : RoomDatabase() {
     abstract fun hotelDao(): HotelDao
     abstract fun deviceDao(): DeviceDao
     abstract fun roomDao(): RoomDao
+    abstract fun sharedAppStateDao(): SharedAppStateDao
 
     companion object {
         @Volatile

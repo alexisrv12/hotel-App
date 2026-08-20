@@ -1,14 +1,25 @@
 package com.example.ui.screens
 
+import android.Manifest
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import android.util.Log
+import android.view.ViewGroup
 import android.widget.Toast
+import androidx.camera.core.Camera
+import androidx.camera.core.CameraSelector
+import androidx.camera.core.ImageAnalysis
+import androidx.camera.core.ImageProxy
+import androidx.camera.core.Preview
+import androidx.camera.lifecycle.ProcessCameraProvider
+import androidx.camera.view.PreviewView
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
-import androidx.compose.animation.slideInVertically
-import androidx.compose.animation.slideOutVertically
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -24,8 +35,6 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -33,11 +42,15 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.CameraAlt
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Devices
 import androidx.compose.material.icons.filled.ErrorOutline
+import androidx.compose.material.icons.filled.FlashlightOff
+import androidx.compose.material.icons.filled.FlashlightOn
 import androidx.compose.material.icons.filled.Key
 import androidx.compose.material.icons.filled.Link
 import androidx.compose.material.icons.filled.Lock
@@ -49,8 +62,8 @@ import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.Smartphone
 import androidx.compose.material.icons.filled.SwapHoriz
 import androidx.compose.material.icons.filled.Timer
-import androidx.compose.material3.Badge
-import androidx.compose.material3.BadgedBox
+import androidx.compose.material.icons.filled.Wifi
+import androidx.compose.material.icons.filled.WifiOff
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -63,7 +76,6 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SegmentedButton
 import androidx.compose.material3.SegmentedButtonDefaults
@@ -82,10 +94,8 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -94,6 +104,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -102,16 +113,28 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
+import androidx.compose.ui.viewinterop.AndroidView
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.data.entities.DeviceConnectionStatus
 import com.example.data.entities.DeviceEntity
 import com.example.ui.viewmodel.DeviceLinkingViewModel
 import com.example.utils.NetworkConnectivityHelper
 import com.example.utils.PinValidationResult
+import com.google.accompanist.permissions.ExperimentalPermissionsApi
+import com.google.accompanist.permissions.isGranted
+import com.google.accompanist.permissions.rememberPermissionState
+import com.google.zxing.BinaryBitmap
+import com.google.zxing.MultiFormatReader
+import com.google.zxing.PlanarYUVLuminanceSource
+import com.google.zxing.common.HybridBinarizer
+import java.nio.ByteBuffer
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.util.concurrent.Executors
 import kotlin.math.abs
 
 enum class UserRoleMode {
@@ -136,12 +159,25 @@ fun DeviceLinkingScreen(
     val context = LocalContext.current
     val snackbarHostState = remember { SnackbarHostState() }
 
-    // UI States
+    // UI Navigation & Mode States
     var selectedRole by remember { mutableStateOf(UserRoleMode.MANAGER) }
     var managerMode by remember { mutableStateOf(ManagerLinkingMode.QR) }
     var receptionMode by remember { mutableStateOf(ReceptionistInputMode.PIN) }
 
-    // Observe ViewModel flows
+    // Real-time network connectivity state
+    val isOnline by remember {
+        NetworkConnectivityHelper.observeNetworkConnectivity(context)
+    }.collectAsState(initial = NetworkConnectivityHelper.isNetworkAvailable(context))
+
+    // Track network failure & pending generation action for the "Retry Connection" button
+    var networkFailureMessage by remember { mutableStateOf<String?>(null) }
+    var pendingGenerationAction by remember { mutableStateOf<(() -> Unit)?>(null) }
+
+    // CameraX QR Scanner Dialog State
+    var showCameraScannerDialog by remember { mutableStateOf(false) }
+    var scannedQrResultFromCamera by remember { mutableStateOf<String?>(null) }
+
+    // Observers from ViewModel
     val linkedDevices by viewModel.linkedDevices.collectAsState()
     val currentPin by viewModel.currentPin.collectAsState()
     val currentQrSessionToken by viewModel.currentQrSessionToken.collectAsState()
@@ -151,11 +187,28 @@ fun DeviceLinkingScreen(
     val pinValidationResult by viewModel.pinValidationResult.collectAsState()
     val userMessage by viewModel.userMessage.collectAsState()
 
+    // Auto-clear network failure state when connection is restored
+    LaunchedEffect(isOnline) {
+        if (isOnline && networkFailureMessage != null) {
+            networkFailureMessage = null
+        }
+    }
+
     // Show toast / snackbar on userMessage change
     LaunchedEffect(userMessage) {
         userMessage?.let { msg ->
             snackbarHostState.showSnackbar(msg)
             viewModel.clearUserMessage()
+        }
+    }
+
+    // Handle QR code received from camera scanner
+    LaunchedEffect(scannedQrResultFromCamera) {
+        scannedQrResultFromCamera?.let { token ->
+            viewModel.decodeQrToken(token)
+            selectedRole = UserRoleMode.RECEPTIONIST
+            receptionMode = ReceptionistInputMode.QR
+            scannedQrResultFromCamera = null
         }
     }
 
@@ -197,6 +250,19 @@ fun DeviceLinkingScreen(
                         }
                     }
                 },
+                actions = {
+                    // Quick Action: Open CameraX QR Scanner
+                    IconButton(
+                        onClick = { showCameraScannerDialog = true },
+                        modifier = Modifier.testTag("open_camera_scanner_appbar")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.QrCodeScanner,
+                            contentDescription = "Escanear QR con Cámara",
+                            tint = MaterialTheme.colorScheme.primary
+                        )
+                    }
+                },
                 navigationIcon = {
                     if (onNavigateBack != null) {
                         IconButton(onClick = onNavigateBack) {
@@ -217,8 +283,44 @@ fun DeviceLinkingScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(innerPadding)
+                .verticalScroll(rememberScrollState())
                 .background(MaterialTheme.colorScheme.surfaceContainerLowest)
         ) {
+            // 1. Persistent Real-Time Network Status Indicator Bar
+            NetworkStatusIndicatorBar(isOnline = isOnline)
+
+            // 2. Retry Connection Banner (Appears only when network check fails)
+            AnimatedVisibility(
+                visible = networkFailureMessage != null,
+                enter = expandVertically() + fadeIn(),
+                exit = shrinkVertically() + fadeOut()
+            ) {
+                networkFailureMessage?.let { errorMsg ->
+                    RetryConnectionBanner(
+                        errorMessage = errorMsg,
+                        onRetry = {
+                            val available = NetworkConnectivityHelper.isNetworkAvailable(context)
+                            if (available) {
+                                networkFailureMessage = null
+                                pendingGenerationAction?.invoke()
+                                pendingGenerationAction = null
+                                Toast.makeText(context, "Conexión restablecida con éxito.", Toast.LENGTH_SHORT).show()
+                            } else {
+                                Toast.makeText(
+                                    context,
+                                    "Aún no hay conexión a Internet. Verifique su red Wi-Fi o datos.",
+                                    Toast.LENGTH_SHORT
+                                ).show()
+                            }
+                        },
+                        onDismiss = {
+                            networkFailureMessage = null
+                            pendingGenerationAction = null
+                        }
+                    )
+                }
+            }
+
             // Role Selection Tab Row (Gerente vs Recepcionista)
             TabRow(
                 selectedTabIndex = selectedRole.ordinal,
@@ -276,7 +378,20 @@ fun DeviceLinkingScreen(
                 UserRoleMode.MANAGER -> {
                     ManagerInterfaceContent(
                         managerMode = managerMode,
-                        onManagerModeChange = { managerMode = it },
+                        onManagerModeChange = { newMode ->
+                            if (NetworkConnectivityHelper.isNetworkAvailable(context)) {
+                                managerMode = newMode
+                                networkFailureMessage = null
+                            } else {
+                                networkFailureMessage = "Se requiere conexión a Internet (Wi-Fi o Datos) para cambiar y generar el código de vinculación."
+                                pendingGenerationAction = { managerMode = newMode }
+                                Toast.makeText(
+                                    context,
+                                    "Se requiere conexión a Internet (Wi-Fi o Datos) para generar el código de vinculación.",
+                                    Toast.LENGTH_LONG
+                                ).show()
+                            }
+                        },
                         currentPin = currentPin,
                         currentQrSessionToken = currentQrSessionToken,
                         pinCountdownText = pinCountdownText,
@@ -285,7 +400,10 @@ fun DeviceLinkingScreen(
                         onGenerateNewPin = {
                             if (NetworkConnectivityHelper.isNetworkAvailable(context)) {
                                 viewModel.generateNewPin()
+                                networkFailureMessage = null
                             } else {
+                                networkFailureMessage = "No se pudo generar el PIN: Se requiere conexión a Internet (Wi-Fi o Datos)."
+                                pendingGenerationAction = { viewModel.generateNewPin() }
                                 Toast.makeText(
                                     context,
                                     "Se requiere conexión a Internet (Wi-Fi o Datos) para generar el código de vinculación.",
@@ -296,7 +414,10 @@ fun DeviceLinkingScreen(
                         onGenerateNewQr = {
                             if (NetworkConnectivityHelper.isNetworkAvailable(context)) {
                                 viewModel.generateNewQrToken()
+                                networkFailureMessage = null
                             } else {
+                                networkFailureMessage = "No se pudo generar el Código QR: Se requiere conexión a Internet (Wi-Fi o Datos)."
+                                pendingGenerationAction = { viewModel.generateNewQrToken() }
                                 Toast.makeText(
                                     context,
                                     "Se requiere conexión a Internet (Wi-Fi o Datos) para generar el código de vinculación.",
@@ -337,8 +458,171 @@ fun DeviceLinkingScreen(
                         },
                         onClearValidationResult = {
                             viewModel.clearPinValidationResult()
+                        },
+                        onOpenQrScanner = {
+                            showCameraScannerDialog = true
                         }
                     )
+                }
+            }
+        }
+    }
+
+    // CameraX Scanner Dialog
+    if (showCameraScannerDialog) {
+        CameraXQrScannerDialog(
+            onDismiss = { showCameraScannerDialog = false },
+            onQrCodeDetected = { rawQrString ->
+                showCameraScannerDialog = false
+                scannedQrResultFromCamera = rawQrString
+                Toast.makeText(context, "Código QR escaneado con éxito", Toast.LENGTH_SHORT).show()
+            }
+        )
+    }
+}
+
+// ==========================================
+// PERSISTENT STATUS INDICATOR BAR
+// ==========================================
+@Composable
+private fun NetworkStatusIndicatorBar(
+    isOnline: Boolean,
+    modifier: Modifier = Modifier
+) {
+    val backgroundColor by animateColorAsState(
+        targetValue = if (isOnline) Color(0xFFE8F5E9) else Color(0xFFFFEBEE),
+        label = "status_bg_color"
+    )
+    val contentColor = if (isOnline) Color(0xFF2E7D32) else Color(0xFFC62828)
+    val dotColor = if (isOnline) Color(0xFF4CAF50) else Color(0xFFF44336)
+    val statusText = if (isOnline) "En línea • Conexión a Internet activa" else "Sin conexión a Internet • Modo desconectado"
+
+    Surface(
+        color = backgroundColor,
+        modifier = modifier
+            .fillMaxWidth()
+            .testTag("network_status_indicator_bar")
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            // Status Dot
+            Box(
+                modifier = Modifier
+                    .size(10.dp)
+                    .clip(CircleShape)
+                    .background(dotColor)
+            )
+
+            Icon(
+                imageVector = if (isOnline) Icons.Default.Wifi else Icons.Default.WifiOff,
+                contentDescription = null,
+                tint = contentColor,
+                modifier = Modifier.size(16.dp)
+            )
+
+            Text(
+                text = statusText,
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = FontWeight.Bold,
+                color = contentColor
+            )
+        }
+    }
+}
+
+// ==========================================
+// RETRY CONNECTION BANNER (ON NETWORK FAILURE)
+// ==========================================
+@Composable
+private fun RetryConnectionBanner(
+    errorMessage: String,
+    onRetry: () -> Unit,
+    onDismiss: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Surface(
+        color = Color(0xFFFFF3E0),
+        shape = RoundedCornerShape(10.dp),
+        border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFFFFB74D)),
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 8.dp)
+            .testTag("retry_connection_banner")
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(14.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.WifiOff,
+                        contentDescription = null,
+                        tint = Color(0xFFE65100),
+                        modifier = Modifier.size(22.dp)
+                    )
+                    Text(
+                        text = "Fallo de Conexión de Red",
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.Bold,
+                        color = Color(0xFFE65100)
+                    )
+                }
+
+                IconButton(
+                    onClick = onDismiss,
+                    modifier = Modifier.size(24.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Close,
+                        contentDescription = "Cerrar",
+                        tint = Color(0xFFE65100),
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
+            }
+
+            Text(
+                text = errorMessage,
+                style = MaterialTheme.typography.bodySmall,
+                color = Color(0xFFBF360C)
+            )
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.End,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Button(
+                    onClick = onRetry,
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = Color(0xFFE65100),
+                        contentColor = Color.White
+                    ),
+                    modifier = Modifier.testTag("retry_connection_button")
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Refresh,
+                        contentDescription = null,
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text("Reintentar Conexión", fontWeight = FontWeight.Bold)
                 }
             }
         }
@@ -348,6 +632,7 @@ fun DeviceLinkingScreen(
 // ==========================================
 // MANAGER INTERFACE CONTENT
 // ==========================================
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun ManagerInterfaceContent(
     managerMode: ManagerLinkingMode,
@@ -368,8 +653,7 @@ private fun ManagerInterfaceContent(
 
     Column(
         modifier = Modifier
-            .fillMaxSize()
-            .verticalScroll(rememberScrollState())
+            .fillMaxWidth()
             .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
@@ -400,17 +684,7 @@ private fun ManagerInterfaceContent(
                 ) {
                     SegmentedButton(
                         selected = managerMode == ManagerLinkingMode.QR,
-                        onClick = {
-                            if (NetworkConnectivityHelper.isNetworkAvailable(context)) {
-                                onManagerModeChange(ManagerLinkingMode.QR)
-                            } else {
-                                Toast.makeText(
-                                    context,
-                                    "Se requiere conexión a Internet (Wi-Fi o Datos) para generar el código de vinculación.",
-                                    Toast.LENGTH_LONG
-                                ).show()
-                            }
-                        },
+                        onClick = { onManagerModeChange(ManagerLinkingMode.QR) },
                         shape = SegmentedButtonDefaults.itemShape(index = 0, count = 2),
                         modifier = Modifier.testTag("qr_option_button")
                     ) {
@@ -429,17 +703,7 @@ private fun ManagerInterfaceContent(
 
                     SegmentedButton(
                         selected = managerMode == ManagerLinkingMode.PIN,
-                        onClick = {
-                            if (NetworkConnectivityHelper.isNetworkAvailable(context)) {
-                                onManagerModeChange(ManagerLinkingMode.PIN)
-                            } else {
-                                Toast.makeText(
-                                    context,
-                                    "Se requiere conexión a Internet (Wi-Fi o Datos) para generar el código de vinculación.",
-                                    Toast.LENGTH_LONG
-                                ).show()
-                            }
-                        },
+                        onClick = { onManagerModeChange(ManagerLinkingMode.PIN) },
                         shape = SegmentedButtonDefaults.itemShape(index = 1, count = 2),
                         modifier = Modifier.testTag("pin_option_button")
                     ) {
@@ -452,14 +716,14 @@ private fun ManagerInterfaceContent(
                                 contentDescription = null,
                                 modifier = Modifier.size(18.dp)
                             )
-                            Text("PIN Seguro de 6 Dígitos")
+                            Text("PIN Seguro")
                         }
                     }
                 }
             }
         }
 
-        // Display Active Token according to mode
+        // Active Authorization Display Card
         when (managerMode) {
             ManagerLinkingMode.QR -> {
                 QrDisplayCard(
@@ -467,7 +731,10 @@ private fun ManagerInterfaceContent(
                     countdownText = qrCountdownText,
                     onRefreshQr = onGenerateNewQr,
                     onCopyToken = {
-                        copyToClipboard(context, "Código QR Token", currentQrSessionToken)
+                        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                        val clip = ClipData.newPlainText("QR Token", currentQrSessionToken)
+                        clipboard.setPrimaryClip(clip)
+                        Toast.makeText(context, "Token QR copiado al portapapeles", Toast.LENGTH_SHORT).show()
                     }
                 )
             }
@@ -478,17 +745,18 @@ private fun ManagerInterfaceContent(
                     countdownText = pinCountdownText,
                     onRefreshPin = onGenerateNewPin,
                     onCopyPin = {
-                        copyToClipboard(context, "PIN de Vinculación", currentPin)
+                        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                        val clip = ClipData.newPlainText("PIN", currentPin)
+                        clipboard.setPrimaryClip(clip)
+                        Toast.makeText(context, "PIN copiado al portapapeles", Toast.LENGTH_SHORT).show()
                     }
                 )
             }
         }
 
-        // Linked Devices Section Header
+        // Linked Devices List Header
         Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(top = 8.dp),
+            modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
@@ -512,17 +780,11 @@ private fun ManagerInterfaceContent(
                 onClick = { showManualAddDialog = true },
                 modifier = Modifier.testTag("manual_add_device_button")
             ) {
-                Icon(
-                    imageVector = Icons.Default.Link,
-                    contentDescription = null,
-                    modifier = Modifier.size(16.dp)
-                )
-                Spacer(modifier = Modifier.width(6.dp))
-                Text("Registrar Manual")
+                Text("+ Añadir Manual")
             }
         }
 
-        // Linked Devices List
+        // Devices Items
         if (linkedDevices.isEmpty()) {
             EmptyDevicesPlaceholder()
         } else {
@@ -546,10 +808,10 @@ private fun ManagerInterfaceContent(
     }
 
     if (showManualAddDialog) {
-        ManualDeviceAddDialog(
+        ManualAddDeviceDialog(
             onDismiss = { showManualAddDialog = false },
-            onConfirm = { name, userAssigned ->
-                onManualLinkDevice(name, userAssigned)
+            onConfirm = { name, assignedUser ->
+                onManualLinkDevice(name, assignedUser)
                 showManualAddDialog = false
             }
         )
@@ -559,6 +821,7 @@ private fun ManagerInterfaceContent(
 // ==========================================
 // RECEPTIONIST INTERFACE CONTENT
 // ==========================================
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun ReceptionistInterfaceContent(
     receptionMode: ReceptionistInputMode,
@@ -567,27 +830,140 @@ private fun ReceptionistInterfaceContent(
     pinValidationResult: PinValidationResult?,
     decodedQrPayload: String?,
     linkedDevices: List<DeviceEntity>,
-    onValidatePin: (String) -> PinValidationResult,
-    onDecodeQrToken: (String) -> String?,
+    onValidatePin: (String) -> Unit,
+    onDecodeQrToken: (String) -> Unit,
     onLinkDevice: (String, String, String) -> Unit,
-    onClearValidationResult: () -> Unit
+    onClearValidationResult: () -> Unit,
+    onOpenQrScanner: () -> Unit
 ) {
     val context = LocalContext.current
     var inputPin by remember { mutableStateOf("") }
     var inputQrToken by remember { mutableStateOf("") }
-    var deviceName by remember { mutableStateOf("Caja Recepción 1") }
-    var userAssigned by remember { mutableStateOf("Recepcionista Turno Día") }
-    var generatedDeviceId by remember {
-        mutableStateOf("DEV-" + (1000..9999).random())
-    }
+    var deviceName by remember { mutableStateOf("Tablet Recepción 1") }
+    var receptionistName by remember { mutableStateOf("Recepcionista Turno Día") }
 
     Column(
         modifier = Modifier
-            .fillMaxSize()
-            .verticalScroll(rememberScrollState())
+            .fillMaxWidth()
             .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            colors = CardDefaults.cardColors(
+                containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+            )
+        ) {
+            Column(
+                modifier = Modifier.padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Text(
+                    text = "Autorización de Terminal",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold
+                )
+                Text(
+                    text = "Ingrese las credenciales provistas por la administración o escanee el código QR con la cámara.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+
+        // Camera Quick Action Banner
+        Surface(
+            shape = RoundedCornerShape(12.dp),
+            color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f),
+            border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.3f)),
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable { onOpenQrScanner() }
+                .testTag("scan_qr_camera_quick_banner")
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(14.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    Surface(
+                        shape = CircleShape,
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(40.dp)
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Icon(
+                                imageVector = Icons.Default.CameraAlt,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.onPrimary,
+                                modifier = Modifier.size(22.dp)
+                            )
+                        }
+                    }
+                    Column {
+                        Text(
+                            text = "Escanear QR con Cámara",
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                            text = "Apunta al código QR del Gerente para auto-vincular",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+
+                Icon(
+                    imageVector = Icons.Default.QrCodeScanner,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary
+                )
+            }
+        }
+
+        // Mode switch
+        SingleChoiceSegmentedButtonRow(
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            SegmentedButton(
+                selected = receptionMode == ReceptionistInputMode.PIN,
+                onClick = { onReceptionModeChange(ReceptionistInputMode.PIN) },
+                shape = SegmentedButtonDefaults.itemShape(index = 0, count = 2),
+                modifier = Modifier.testTag("reception_pin_mode_button")
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Icon(imageVector = Icons.Default.Lock, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Text("Ingresar PIN")
+                }
+            }
+
+            SegmentedButton(
+                selected = receptionMode == ReceptionistInputMode.QR,
+                onClick = { onReceptionModeChange(ReceptionistInputMode.QR) },
+                shape = SegmentedButtonDefaults.itemShape(index = 1, count = 2),
+                modifier = Modifier.testTag("reception_qr_mode_button")
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Icon(imageVector = Icons.Default.QrCodeScanner, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Text("Pegar Token QR")
+                }
+            }
+        }
+
+        // Terminal details configuration
         ElevatedCard(
             modifier = Modifier.fillMaxWidth(),
             colors = CardDefaults.elevatedCardColors(
@@ -599,148 +975,49 @@ private fun ReceptionistInterfaceContent(
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
                 Text(
-                    text = "Vinculación de Terminal de Recepción",
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Bold
-                )
-                Text(
-                    text = "Ingrese los datos de la estación y valide el PIN o código QR proporcionado por la gerencia.",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-
-                // Input Mode Toggle
-                SingleChoiceSegmentedButtonRow(
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    SegmentedButton(
-                        selected = receptionMode == ReceptionistInputMode.PIN,
-                        onClick = {
-                            onReceptionModeChange(ReceptionistInputMode.PIN)
-                            onClearValidationResult()
-                        },
-                        shape = SegmentedButtonDefaults.itemShape(index = 0, count = 2)
-                    ) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(6.dp)
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.Key,
-                                contentDescription = null,
-                                modifier = Modifier.size(18.dp)
-                            )
-                            Text("Ingresar PIN")
-                        }
-                    }
-
-                    SegmentedButton(
-                        selected = receptionMode == ReceptionistInputMode.QR,
-                        onClick = {
-                            onReceptionModeChange(ReceptionistInputMode.QR)
-                            onClearValidationResult()
-                        },
-                        shape = SegmentedButtonDefaults.itemShape(index = 1, count = 2)
-                    ) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(6.dp)
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.QrCodeScanner,
-                                contentDescription = null,
-                                modifier = Modifier.size(18.dp)
-                            )
-                            Text("Escanear/Pegar QR")
-                        }
-                    }
-                }
-            }
-        }
-
-        // Form Fields (Device Details)
-        Card(
-            modifier = Modifier.fillMaxWidth(),
-            colors = CardDefaults.cardColors(
-                containerColor = MaterialTheme.colorScheme.surface
-            )
-        ) {
-            Column(
-                modifier = Modifier.padding(16.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp)
-            ) {
-                Text(
-                    text = "Información del Dispositivo Local",
+                    text = "Datos de Identificación del Dispositivo",
                     style = MaterialTheme.typography.titleSmall,
-                    fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.primary
+                    fontWeight = FontWeight.Bold
                 )
 
                 OutlinedTextField(
                     value = deviceName,
                     onValueChange = { deviceName = it },
-                    label = { Text("Nombre de la Terminal / Dispositivo") },
-                    leadingIcon = {
-                        Icon(imageVector = Icons.Default.Smartphone, contentDescription = null)
-                    },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .testTag("device_name_input"),
-                    singleLine = true
+                    label = { Text("Nombre del Dispositivo") },
+                    leadingIcon = { Icon(imageVector = Icons.Default.Smartphone, contentDescription = null) },
+                    modifier = Modifier.fillMaxWidth()
                 )
 
                 OutlinedTextField(
-                    value = userAssigned,
-                    onValueChange = { userAssigned = it },
-                    label = { Text("Usuario Asignado / Operador") },
-                    leadingIcon = {
-                        Icon(imageVector = Icons.Default.Person, contentDescription = null)
-                    },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .testTag("user_assigned_input"),
-                    singleLine = true
+                    value = receptionistName,
+                    onValueChange = { receptionistName = it },
+                    label = { Text("Usuario Responsable") },
+                    leadingIcon = { Icon(imageVector = Icons.Default.Person, contentDescription = null) },
+                    modifier = Modifier.fillMaxWidth()
                 )
-
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text(
-                        text = "ID del Dispositivo: $generatedDeviceId",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    IconButton(
-                        onClick = { generatedDeviceId = "DEV-" + (1000..9999).random() }
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Refresh,
-                            contentDescription = "Regenerar ID",
-                            modifier = Modifier.size(18.dp)
-                        )
-                    }
-                }
             }
         }
 
-        // Input according to Mode (PIN vs QR)
+        // Action Input forms
         when (receptionMode) {
             ReceptionistInputMode.PIN -> {
                 PinInputCard(
                     inputPin = inputPin,
-                    onPinChange = { inputPin = it },
+                    onPinChange = {
+                        inputPin = it
+                        onClearValidationResult()
+                    },
                     pinValidationResult = pinValidationResult,
                     onValidateAndLink = {
-                        val result = onValidatePin(inputPin)
-                        if (result is PinValidationResult.Valid) {
-                            if (deviceName.isBlank()) {
-                                Toast.makeText(context, "Ingrese el nombre del dispositivo", Toast.LENGTH_SHORT).show()
-                            } else {
-                                onLinkDevice(deviceName, userAssigned, generatedDeviceId)
+                        if (inputPin.length == 6) {
+                            onValidatePin(inputPin)
+                            if (inputPin == currentPin) {
+                                onLinkDevice(deviceName, receptionistName, "DEV-${System.currentTimeMillis() % 100000}")
+                                Toast.makeText(context, "¡Terminal vinculada exitosamente!", Toast.LENGTH_SHORT).show()
                                 inputPin = ""
                             }
+                        } else {
+                            Toast.makeText(context, "El PIN debe contener 6 dígitos.", Toast.LENGTH_SHORT).show()
                         }
                     }
                 )
@@ -751,73 +1028,203 @@ private fun ReceptionistInterfaceContent(
                     inputQrToken = inputQrToken,
                     onTokenChange = { inputQrToken = it },
                     decodedQrPayload = decodedQrPayload,
+                    onOpenScanner = onOpenQrScanner,
                     onDecodeAndLink = {
-                        if (inputQrToken.isBlank()) {
-                            Toast.makeText(context, "Ingrese o pegue un token de QR válido", Toast.LENGTH_SHORT).show()
-                            return@QrInputCard
-                        }
-                        val decoded = onDecodeQrToken(inputQrToken)
-                        if (decoded != null && decoded.startsWith("LINK_SESSION")) {
-                            if (deviceName.isBlank()) {
-                                Toast.makeText(context, "Ingrese el nombre del dispositivo", Toast.LENGTH_SHORT).show()
-                            } else {
-                                onLinkDevice(deviceName, userAssigned, generatedDeviceId)
-                                inputQrToken = ""
-                            }
-                        } else {
-                            Toast.makeText(context, "Token QR inválido o expirarado", Toast.LENGTH_SHORT).show()
-                        }
+                        onDecodeQrToken(inputQrToken)
+                        onLinkDevice(deviceName, receptionistName, "DEV-QR-${System.currentTimeMillis() % 100000}")
+                        Toast.makeText(context, "¡Terminal vinculada mediante token QR!", Toast.LENGTH_SHORT).show()
+                        inputQrToken = ""
                     }
                 )
             }
         }
+    }
+}
 
-        // Currently Registered Devices Overview for Reception
-        Text(
-            text = "Estado de Sincronización Local",
-            style = MaterialTheme.typography.titleMedium,
-            fontWeight = FontWeight.Bold,
-            modifier = Modifier.padding(top = 8.dp)
-        )
+// ==========================================
+// CAMERAX QR SCANNER DIALOG COMPONENT
+// ==========================================
+@OptIn(ExperimentalPermissionsApi::class, ExperimentalMaterial3Api::class)
+@Composable
+fun CameraXQrScannerDialog(
+    onDismiss: () -> Unit,
+    onQrCodeDetected: (String) -> Unit
+) {
+    val context = LocalContext.current
+    val lifecycleOwner = LocalLifecycleOwner.current
+    val cameraPermissionState = rememberPermissionState(Manifest.permission.CAMERA)
 
-        if (linkedDevices.isEmpty()) {
-            EmptyDevicesPlaceholder()
-        } else {
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                linkedDevices.forEach { device ->
-                    Card(
-                        modifier = Modifier.fillMaxWidth(),
-                        colors = CardDefaults.cardColors(
-                            containerColor = MaterialTheme.colorScheme.surface
-                        )
-                    ) {
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(12.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.SpaceBetween
-                        ) {
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(10.dp)
-                            ) {
-                                StatusDot(status = device.connectionStatus)
-                                Column {
-                                    Text(
-                                        text = device.name,
-                                        style = MaterialTheme.typography.bodyMedium,
-                                        fontWeight = FontWeight.Bold
-                                    )
-                                    Text(
-                                        text = "Asignado a: ${device.userAssigned}",
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                                    )
+    var isTorchOn by remember { mutableStateOf(false) }
+    var cameraInstance by remember { mutableStateOf<Camera?>(null) }
+    var hasDetectedCode by remember { mutableStateOf(false) }
+
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        Scaffold(
+            modifier = Modifier.fillMaxSize(),
+            topBar = {
+                TopAppBar(
+                    title = { Text("Escanear Código QR", fontWeight = FontWeight.Bold) },
+                    navigationIcon = {
+                        IconButton(onClick = onDismiss) {
+                            Icon(Icons.Default.Close, contentDescription = "Cerrar")
+                        }
+                    },
+                    actions = {
+                        if (cameraPermissionState.status.isGranted) {
+                            IconButton(
+                                onClick = {
+                                    isTorchOn = !isTorchOn
+                                    cameraInstance?.cameraControl?.enableTorch(isTorchOn)
                                 }
+                            ) {
+                                Icon(
+                                    imageVector = if (isTorchOn) Icons.Default.FlashlightOff else Icons.Default.FlashlightOn,
+                                    contentDescription = if (isTorchOn) "Apagar Linterna" else "Encender Linterna"
+                                )
+                            }
+                        }
+                    },
+                    colors = TopAppBarDefaults.topAppBarColors(
+                        containerColor = Color.Black.copy(alpha = 0.8f),
+                        titleContentColor = Color.White,
+                        navigationIconContentColor = Color.White,
+                        actionIconContentColor = Color.White
+                    )
+                )
+            }
+        ) { paddingValues ->
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(paddingValues)
+                    .background(Color.Black)
+            ) {
+                if (cameraPermissionState.status.isGranted) {
+                    // Live Camera View
+                    AndroidView(
+                        factory = { ctx ->
+                            val previewView = PreviewView(ctx).apply {
+                                layoutParams = ViewGroup.LayoutParams(
+                                    ViewGroup.LayoutParams.MATCH_PARENT,
+                                    ViewGroup.LayoutParams.MATCH_PARENT
+                                )
+                                scaleType = PreviewView.ScaleType.FILL_CENTER
                             }
 
-                            StatusBadge(status = device.connectionStatus)
+                            val cameraProviderFuture = ProcessCameraProvider.getInstance(ctx)
+                            val executor = Executors.newSingleThreadExecutor()
+
+                            cameraProviderFuture.addListener({
+                                val cameraProvider = cameraProviderFuture.get()
+                                val preview = Preview.Builder().build().also {
+                                    it.setSurfaceProvider(previewView.surfaceProvider)
+                                }
+
+                                val imageAnalysis = ImageAnalysis.Builder()
+                                    .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+                                    .build()
+
+                                val multiFormatReader = MultiFormatReader()
+
+                                imageAnalysis.setAnalyzer(executor) { imageProxy ->
+                                    if (!hasDetectedCode) {
+                                        val qrText = decodeQrFromImage(imageProxy, multiFormatReader)
+                                        if (!qrText.isNullOrBlank()) {
+                                            hasDetectedCode = true
+                                            previewView.post {
+                                                onQrCodeDetected(qrText)
+                                            }
+                                        }
+                                    }
+                                    imageProxy.close()
+                                }
+
+                                try {
+                                    cameraProvider.unbindAll()
+                                    val cam = cameraProvider.bindToLifecycle(
+                                        lifecycleOwner,
+                                        CameraSelector.DEFAULT_BACK_CAMERA,
+                                        preview,
+                                        imageAnalysis
+                                    )
+                                    cameraInstance = cam
+                                } catch (exc: Exception) {
+                                    Log.e("CameraXScanner", "Error al iniciar cámara", exc)
+                                }
+                            }, ContextCompat.getMainExecutor(ctx))
+
+                            previewView
+                        },
+                        modifier = Modifier.fillMaxSize()
+                    )
+
+                    // Reticle overlay
+                    Box(
+                        modifier = Modifier.fillMaxSize(),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Surface(
+                            modifier = Modifier
+                                .size(260.dp)
+                                .border(3.dp, MaterialTheme.colorScheme.primary, RoundedCornerShape(16.dp)),
+                            color = Color.Transparent,
+                            shape = RoundedCornerShape(16.dp)
+                        ) {}
+                    }
+
+                    // Guidance bottom chip
+                    Surface(
+                        color = Color.Black.copy(alpha = 0.75f),
+                        shape = RoundedCornerShape(20.dp),
+                        modifier = Modifier
+                            .align(Alignment.BottomCenter)
+                            .padding(bottom = 36.dp)
+                    ) {
+                        Text(
+                            text = "Enfoca el código QR de vinculación del Gerente",
+                            color = Color.White,
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.Medium,
+                            modifier = Modifier.padding(horizontal = 20.dp, vertical = 10.dp)
+                        )
+                    }
+                } else {
+                    // Permission Request Prompt
+                    Column(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(24.dp),
+                        verticalArrangement = Arrangement.Center,
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.CameraAlt,
+                            contentDescription = null,
+                            tint = Color.White,
+                            modifier = Modifier.size(64.dp)
+                        )
+                        Spacer(modifier = Modifier.height(16.dp))
+                        Text(
+                            text = "Se requiere permiso de Cámara",
+                            style = MaterialTheme.typography.titleMedium,
+                            color = Color.White,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text(
+                            text = "Para escanear códigos QR de vinculación de dispositivos en tiempo real.",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = Color.White.copy(alpha = 0.8f),
+                            textAlign = TextAlign.Center
+                        )
+                        Spacer(modifier = Modifier.height(20.dp))
+                        Button(
+                            onClick = { cameraPermissionState.launchPermissionRequest() }
+                        ) {
+                            Text("Conceder Permiso de Cámara")
                         }
                     }
                 }
@@ -826,10 +1233,39 @@ private fun ReceptionistInterfaceContent(
     }
 }
 
-// ==========================================
-// SUB-COMPONENTS
-// ==========================================
+/**
+ * Decodifica una imagen capturada por CameraX utilizando ZXing MultiFormatReader.
+ */
+private fun decodeQrFromImage(imageProxy: ImageProxy, reader: MultiFormatReader): String? {
+    val buffer: ByteBuffer = imageProxy.planes[0].buffer
+    val bytes = ByteArray(buffer.remaining())
+    buffer.get(bytes)
 
+    val width = imageProxy.width
+    val height = imageProxy.height
+
+    return try {
+        val source = PlanarYUVLuminanceSource(
+            bytes,
+            width,
+            height,
+            0,
+            0,
+            width,
+            height,
+            false
+        )
+        val binaryBitmap = BinaryBitmap(HybridBinarizer(source))
+        val result = reader.decodeWithState(binaryBitmap)
+        result.text
+    } catch (_: Exception) {
+        null
+    }
+}
+
+// ==========================================
+// HELPER CARDS & WIDGETS
+// ==========================================
 @Composable
 private fun QrDisplayCard(
     qrSessionToken: String,
@@ -840,7 +1276,7 @@ private fun QrDisplayCard(
     Card(
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surface
+            containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.35f)
         )
     ) {
         Column(
@@ -850,34 +1286,40 @@ private fun QrDisplayCard(
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
-            Text(
-                text = "Escanear con Terminal Recepción",
-                style = MaterialTheme.typography.titleSmall,
-                fontWeight = FontWeight.SemiBold,
-                color = MaterialTheme.colorScheme.onSurface
-            )
-
-            Surface(
-                shape = RoundedCornerShape(20.dp),
-                color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f)
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                Row(
-                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                Text(
+                    text = "Código QR de Autorización",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.onPrimaryContainer
+                )
+
+                Surface(
+                    shape = RoundedCornerShape(16.dp),
+                    color = MaterialTheme.colorScheme.primary.copy(alpha = 0.15f)
                 ) {
-                    Icon(
-                        imageVector = Icons.Default.Timer,
-                        contentDescription = null,
-                        modifier = Modifier.size(16.dp),
-                        tint = MaterialTheme.colorScheme.primary
-                    )
-                    Text(
-                        text = "Válido durante $countdownText (5 min máx)",
-                        style = MaterialTheme.typography.labelMedium,
-                        fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.onPrimaryContainer
-                    )
+                    Row(
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Timer,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Text(
+                            text = countdownText,
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                    }
                 }
             }
 
@@ -957,73 +1399,6 @@ private fun QrDisplayCard(
 }
 
 @Composable
-private fun QrCanvasMatrix(
-    qrDataString: String,
-    modifier: Modifier = Modifier
-) {
-    val primaryColor = MaterialTheme.colorScheme.primary
-    val darkColor = Color(0xFF1E1E1E)
-
-    Canvas(modifier = modifier) {
-        val gridSize = 19
-        val cellSize = size.width / gridSize
-        val hash = abs(qrDataString.hashCode())
-
-        // Draw background
-        drawRect(color = Color.White, size = size)
-
-        // Draw QR Finder Patterns (Corners)
-        fun drawFinderPattern(startX: Int, startY: Int) {
-            val left = startX * cellSize
-            val top = startY * cellSize
-            val patternSize = 5 * cellSize
-            // Outer black square
-            drawRect(
-                color = darkColor,
-                topLeft = Offset(left, top),
-                size = Size(patternSize, patternSize)
-            )
-            // Inner white square
-            drawRect(
-                color = Color.White,
-                topLeft = Offset(left + cellSize, top + cellSize),
-                size = Size(patternSize - 2 * cellSize, patternSize - 2 * cellSize)
-            )
-            // Center black square
-            drawRect(
-                color = darkColor,
-                topLeft = Offset(left + 2 * cellSize, top + 2 * cellSize),
-                size = Size(cellSize, cellSize)
-            )
-        }
-
-        drawFinderPattern(0, 0)
-        drawFinderPattern(gridSize - 5, 0)
-        drawFinderPattern(0, gridSize - 5)
-
-        // Deterministic pseudo modules based on hash & position
-        for (row in 0 until gridSize) {
-            for (col in 0 until gridSize) {
-                // Skip finder pattern zones
-                val inTopLeft = row < 5 && col < 5
-                val inTopRight = row < 5 && col >= gridSize - 5
-                val inBottomLeft = row >= gridSize - 5 && col < 5
-                if (inTopLeft || inTopRight || inBottomLeft) continue
-
-                val isBitOn = ((row * 31 + col * 17 + hash) % 3 == 0) || ((row + col + hash) % 5 == 0)
-                if (isBitOn) {
-                    drawRect(
-                        color = if ((row + col) % 2 == 0) darkColor else primaryColor,
-                        topLeft = Offset(col * cellSize, row * cellSize),
-                        size = Size(cellSize * 0.95f, cellSize * 0.95f)
-                    )
-                }
-            }
-        }
-    }
-}
-
-@Composable
 private fun PinDisplayCard(
     pin: String,
     countdownText: String = "05:00",
@@ -1050,24 +1425,26 @@ private fun PinDisplayCard(
                 color = MaterialTheme.colorScheme.onPrimaryContainer
             )
 
-            // Digit slots display
+            // Pin Digits Boxes
             Row(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                pin.forEach { digit ->
+                pin.padEnd(6, '-').forEach { char ->
                     Surface(
-                        modifier = Modifier.size(width = 42.dp, height = 54.dp),
-                        shape = RoundedCornerShape(10.dp),
+                        modifier = Modifier.size(44.dp),
+                        shape = RoundedCornerShape(8.dp),
                         color = MaterialTheme.colorScheme.surface,
-                        tonalElevation = 4.dp,
-                        shadowElevation = 2.dp
+                        border = androidx.compose.foundation.BorderStroke(
+                            1.5.dp,
+                            MaterialTheme.colorScheme.primary
+                        )
                     ) {
                         Box(contentAlignment = Alignment.Center) {
                             Text(
-                                text = digit.toString(),
-                                style = MaterialTheme.typography.headlineMedium,
-                                fontWeight = FontWeight.Bold,
+                                text = char.toString(),
+                                style = MaterialTheme.typography.titleLarge,
+                                fontWeight = FontWeight.ExtraBold,
                                 color = MaterialTheme.colorScheme.primary
                             )
                         }
@@ -1075,12 +1452,24 @@ private fun PinDisplayCard(
                 }
             }
 
-            Text(
-                text = "Válido por 5 minutos ($countdownText restante). Dictar o mostrar al operador de recepción.",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                textAlign = TextAlign.Center
-            )
+            // Expiration and countdown
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Timer,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(16.dp)
+                )
+                Text(
+                    text = "Expira en $countdownText",
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
 
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 OutlinedButton(onClick = onCopyPin) {
@@ -1203,7 +1592,7 @@ private fun PinInputCard(
                                     tint = Color(0xFFC62828)
                                 )
                                 Text(
-                                    text = "PIN Incorrecto. Verifique con gerencia.",
+                                    text = "El PIN ingresado es incorrecto.",
                                     style = MaterialTheme.typography.bodyMedium,
                                     color = Color(0xFFB71C1C),
                                     fontWeight = FontWeight.SemiBold
@@ -1224,14 +1613,15 @@ private fun PinInputCard(
                                 horizontalArrangement = Arrangement.spacedBy(8.dp)
                             ) {
                                 Icon(
-                                    imageVector = Icons.Default.ErrorOutline,
+                                    imageVector = Icons.Default.Timer,
                                     contentDescription = null,
-                                    tint = Color(0xFFEF6C00)
+                                    tint = Color(0xFFE65100)
                                 )
                                 Text(
-                                    text = "Formato de PIN no válido (debe tener 6 dígitos numéricos).",
+                                    text = "Formato de PIN inválido.",
                                     style = MaterialTheme.typography.bodyMedium,
-                                    color = Color(0xFFE65100)
+                                    color = Color(0xFFE65100),
+                                    fontWeight = FontWeight.SemiBold
                                 )
                             }
                         }
@@ -1239,16 +1629,27 @@ private fun PinInputCard(
 
                     is PinValidationResult.RateLimited -> {
                         Surface(
-                            color = Color(0xFFFFEBEE),
+                            color = Color(0xFFFFF3E0),
                             shape = RoundedCornerShape(8.dp),
                             modifier = Modifier.fillMaxWidth()
                         ) {
-                            Text(
-                                text = "Límite excedido. Intente de nuevo en ${pinValidationResult.remainingSeconds} seg.",
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = Color(0xFFB71C1C),
-                                modifier = Modifier.padding(12.dp)
-                            )
+                            Row(
+                                modifier = Modifier.padding(12.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Timer,
+                                    contentDescription = null,
+                                    tint = Color(0xFFE65100)
+                                )
+                                Text(
+                                    text = "Demasiados intentos. Espere ${pinValidationResult.remainingSeconds}s.",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = Color(0xFFE65100),
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                            }
                         }
                     }
                 }
@@ -1261,9 +1662,9 @@ private fun PinInputCard(
                     .fillMaxWidth()
                     .testTag("validate_pin_button")
             ) {
-                Icon(imageVector = Icons.Default.Link, contentDescription = null)
+                Icon(imageVector = Icons.Default.CheckCircle, contentDescription = null)
                 Spacer(modifier = Modifier.width(8.dp))
-                Text("Validar PIN y Vincular")
+                Text("Validar y Autorizar Dispositivo")
             }
         }
     }
@@ -1274,6 +1675,7 @@ private fun QrInputCard(
     inputQrToken: String,
     onTokenChange: (String) -> Unit,
     decodedQrPayload: String?,
+    onOpenScanner: () -> Unit,
     onDecodeAndLink: () -> Unit
 ) {
     Card(
@@ -1288,17 +1690,36 @@ private fun QrInputCard(
                 .padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(14.dp)
         ) {
-            Text(
-                text = "Escanear / Pegar Código QR",
-                style = MaterialTheme.typography.titleSmall,
-                fontWeight = FontWeight.Bold
-            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "Token de Sesión QR",
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.Bold
+                )
+
+                OutlinedButton(
+                    onClick = onOpenScanner,
+                    modifier = Modifier.testTag("scan_qr_camera_button")
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.CameraAlt,
+                        contentDescription = null,
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text("Abrir Cámara")
+                }
+            }
 
             OutlinedTextField(
                 value = inputQrToken,
                 onValueChange = onTokenChange,
                 label = { Text("Token QR (Base64)") },
-                placeholder = { Text("Pegue el token de QR generado aquí...") },
+                placeholder = { Text("Pegue el token de QR generado o escanee con la cámara...") },
                 leadingIcon = {
                     Icon(imageVector = Icons.Default.QrCode, contentDescription = null)
                 },
@@ -1309,7 +1730,7 @@ private fun QrInputCard(
                 maxLines = 3
             )
 
-            if (!decodedQrPayload.isNullByBlank()) {
+            if (!decodedQrPayload.isNullOrBlank()) {
                 Surface(
                     color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f),
                     shape = RoundedCornerShape(8.dp),
@@ -1424,6 +1845,7 @@ private fun LinkedDeviceItemCard(
                             tint = MaterialTheme.colorScheme.primary
                         )
                     }
+
                     IconButton(onClick = onUnlink) {
                         Icon(
                             imageVector = Icons.Default.Delete,
@@ -1438,39 +1860,11 @@ private fun LinkedDeviceItemCard(
 }
 
 @Composable
-private fun StatusDot(status: String) {
-    val color = when (status) {
-        DeviceConnectionStatus.CONNECTED -> Color(0xFF2E7D32)
-        DeviceConnectionStatus.DISCONNECTED -> Color(0xFFC62828)
-        else -> Color(0xFFEF6C00)
-    }
-    Box(
-        modifier = Modifier
-            .size(12.dp)
-            .background(color, CircleShape)
-    )
-}
-
-@Composable
 private fun StatusBadge(status: String) {
-    val (bgColor, textColor, label) = when (status) {
-        DeviceConnectionStatus.CONNECTED -> Triple(
-            Color(0xFFE8F5E9),
-            Color(0xFF1B5E20),
-            "Conectado"
-        )
-
-        DeviceConnectionStatus.DISCONNECTED -> Triple(
-            Color(0xFFFFEBEE),
-            Color(0xFFB71C1C),
-            "Desconectado"
-        )
-
-        else -> Triple(
-            Color(0xFFFFF3E0),
-            Color(0xFFE65100),
-            "Pendiente"
-        )
+    val (bgColor, textColor, text) = when (status) {
+        DeviceConnectionStatus.CONNECTED -> Triple(Color(0xFFE8F5E9), Color(0xFF2E7D32), "Conectado")
+        DeviceConnectionStatus.PENDING -> Triple(Color(0xFFFFF3E0), Color(0xFFE65100), "Pendiente")
+        else -> Triple(Color(0xFFFFEBEE), Color(0xFFC62828), "Desconectado")
     }
 
     Surface(
@@ -1478,13 +1872,29 @@ private fun StatusBadge(status: String) {
         shape = RoundedCornerShape(12.dp)
     ) {
         Text(
-            text = label,
-            modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+            text = text,
+            color = textColor,
             style = MaterialTheme.typography.labelSmall,
             fontWeight = FontWeight.Bold,
-            color = textColor
+            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
         )
     }
+}
+
+@Composable
+private fun StatusDot(status: String) {
+    val color = when (status) {
+        DeviceConnectionStatus.CONNECTED -> Color(0xFF4CAF50)
+        DeviceConnectionStatus.PENDING -> Color(0xFFFF9800)
+        else -> Color(0xFFF44336)
+    }
+
+    Box(
+        modifier = Modifier
+            .size(12.dp)
+            .clip(CircleShape)
+            .background(color)
+    )
 }
 
 @Composable
@@ -1492,7 +1902,7 @@ private fun EmptyDevicesPlaceholder() {
     Surface(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(12.dp),
-        color = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.5f)
+        color = MaterialTheme.colorScheme.surfaceContainerLow
     ) {
         Column(
             modifier = Modifier.padding(24.dp),
@@ -1502,17 +1912,16 @@ private fun EmptyDevicesPlaceholder() {
             Icon(
                 imageVector = Icons.Default.Devices,
                 contentDescription = null,
-                modifier = Modifier.size(40.dp),
-                tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
+                tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
+                modifier = Modifier.size(40.dp)
             )
             Text(
                 text = "No hay dispositivos vinculados",
                 style = MaterialTheme.typography.titleSmall,
-                fontWeight = FontWeight.Bold,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
+                fontWeight = FontWeight.SemiBold
             )
             Text(
-                text = "Utilice el código PIN o QR para autorizar terminales de recepción.",
+                text = "Genere un código QR o PIN arriba para vincular tablets o terminales de recepción.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 textAlign = TextAlign.Center
@@ -1522,44 +1931,42 @@ private fun EmptyDevicesPlaceholder() {
 }
 
 @Composable
-private fun ManualDeviceAddDialog(
+private fun ManualAddDeviceDialog(
     onDismiss: () -> Unit,
     onConfirm: (String, String) -> Unit
 ) {
-    var name by remember { mutableStateOf("") }
-    var userAssigned by remember { mutableStateOf("") }
+    var deviceName by remember { mutableStateOf("") }
+    var assignedUser by remember { mutableStateOf("") }
 
     androidx.compose.material3.AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Registrar Dispositivo Manualmente") },
+        title = { Text("Añadir Dispositivo Manualmente") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 OutlinedTextField(
-                    value = name,
-                    onValueChange = { name = it },
+                    value = deviceName,
+                    onValueChange = { deviceName = it },
                     label = { Text("Nombre del Dispositivo") },
-                    placeholder = { Text("Ej. Pos Recepción 2") },
-                    singleLine = true
+                    placeholder = { Text("Ej. Tablet Mostrador 2") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
                 )
                 OutlinedTextField(
-                    value = userAssigned,
-                    onValueChange = { userAssigned = it },
-                    label = { Text("Usuario Asignado") },
-                    placeholder = { Text("Ej. Recepcionista Noche") },
-                    singleLine = true
+                    value = assignedUser,
+                    onValueChange = { assignedUser = it },
+                    label = { Text("Usuario Responsable") },
+                    placeholder = { Text("Ej. Ana López") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
                 )
             }
         },
         confirmButton = {
             Button(
-                onClick = {
-                    if (name.isNotBlank()) {
-                        onConfirm(name, userAssigned.ifBlank { "Sin asignar" })
-                    }
-                },
-                enabled = name.isNotBlank()
+                onClick = { onConfirm(deviceName, assignedUser) },
+                enabled = deviceName.isNotBlank() && assignedUser.isNotBlank()
             ) {
-                Text("Guardar")
+                Text("Vincular")
             }
         },
         dismissButton = {
@@ -1570,13 +1977,46 @@ private fun ManualDeviceAddDialog(
     )
 }
 
-private fun copyToClipboard(context: Context, label: String, text: String) {
-    val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-    val clip = ClipData.newPlainText(label, text)
-    clipboard.setPrimaryClip(clip)
-    Toast.makeText(context, "$label copiado al portapapeles", Toast.LENGTH_SHORT).show()
-}
+/**
+ * Matriz visual Canvas para renderizar el código QR sin dependencias externas pesadas.
+ */
+@Composable
+private fun QrCanvasMatrix(
+    qrDataString: String,
+    modifier: Modifier = Modifier
+) {
+    Canvas(modifier = modifier) {
+        val matrixSize = 21
+        val cellSize = size.width / matrixSize
+        val hash = abs(qrDataString.hashCode())
 
-private fun String?.isNullByBlank(): Boolean {
-    return this.isNullOrBlank()
+        // Fondo blanco
+        drawRect(color = Color.White, size = size)
+
+        // Patrón determinista basado en el hash del token
+        for (row in 0 until matrixSize) {
+            for (col in 0 until matrixSize) {
+                val isFinderPattern =
+                    (row < 7 && col < 7) ||
+                    (row < 7 && col >= matrixSize - 7) ||
+                    (row >= matrixSize - 7 && col < 7)
+
+                val isBlack = if (isFinderPattern) {
+                    val r = if (row < 7) row else row - (matrixSize - 7)
+                    val c = if (col < 7) col else col - (matrixSize - 7)
+                    r == 0 || r == 6 || c == 0 || c == 6 || (r in 2..4 && c in 2..4)
+                } else {
+                    ((hash * (row + 1) * (col + 1) + row * 17 + col * 31) % 3) == 0
+                }
+
+                if (isBlack) {
+                    drawRect(
+                        color = Color(0xFF1E293B),
+                        topLeft = Offset(col * cellSize, row * cellSize),
+                        size = Size(cellSize, cellSize)
+                    )
+                }
+            }
+        }
+    }
 }
