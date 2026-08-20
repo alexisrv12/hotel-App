@@ -283,13 +283,12 @@ fun DeviceLinkingScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(innerPadding)
-                .verticalScroll(rememberScrollState())
                 .background(MaterialTheme.colorScheme.surfaceContainerLowest)
         ) {
-            // 1. Persistent Real-Time Network Status Indicator Bar
+            // 1. Persistent Real-Time Network Status Indicator Bar (Fijo)
             NetworkStatusIndicatorBar(isOnline = isOnline)
 
-            // 2. Retry Connection Banner (Appears only when network check fails)
+            // 2. Retry Connection Banner (Appears only when network check fails - Fijo)
             AnimatedVisibility(
                 visible = networkFailureMessage != null,
                 enter = expandVertically() + fadeIn(),
@@ -321,7 +320,7 @@ fun DeviceLinkingScreen(
                 }
             }
 
-            // Role Selection Tab Row (Gerente vs Recepcionista)
+            // 3. Role Selection Tab Row (Gerente vs Recepcionista - Fijo en la parte superior)
             TabRow(
                 selectedTabIndex = selectedRole.ordinal,
                 containerColor = MaterialTheme.colorScheme.surface,
@@ -373,96 +372,104 @@ fun DeviceLinkingScreen(
                 )
             }
 
-            // Main Content Area
-            when (selectedRole) {
-                UserRoleMode.MANAGER -> {
-                    ManagerInterfaceContent(
-                        managerMode = managerMode,
-                        onManagerModeChange = { newMode ->
-                            if (NetworkConnectivityHelper.isNetworkAvailable(context)) {
-                                managerMode = newMode
-                                networkFailureMessage = null
-                            } else {
-                                networkFailureMessage = "Se requiere conexión a Internet (Wi-Fi o Datos) para cambiar y generar el código de vinculación."
-                                pendingGenerationAction = { managerMode = newMode }
-                                Toast.makeText(
-                                    context,
-                                    "Se requiere conexión a Internet (Wi-Fi o Datos) para generar el código de vinculación.",
-                                    Toast.LENGTH_LONG
-                                ).show()
+            // 4. Scrollable Content Area: Toma todo el espacio restante con weight(1f)
+            val scrollState = rememberScrollState()
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .weight(1f)
+                    .verticalScroll(scrollState)
+            ) {
+                when (selectedRole) {
+                    UserRoleMode.MANAGER -> {
+                        ManagerInterfaceContent(
+                            managerMode = managerMode,
+                            onManagerModeChange = { newMode ->
+                                if (NetworkConnectivityHelper.isNetworkAvailable(context)) {
+                                    managerMode = newMode
+                                    networkFailureMessage = null
+                                } else {
+                                    networkFailureMessage = "Se requiere conexión a Internet (Wi-Fi o Datos) para cambiar y generar el código de vinculación."
+                                    pendingGenerationAction = { managerMode = newMode }
+                                    Toast.makeText(
+                                        context,
+                                        "Se requiere conexión a Internet (Wi-Fi o Datos) para generar el código de vinculación.",
+                                        Toast.LENGTH_LONG
+                                    ).show()
+                                }
+                            },
+                            currentPin = currentPin,
+                            currentQrSessionToken = currentQrSessionToken,
+                            pinCountdownText = pinCountdownText,
+                            qrCountdownText = qrCountdownText,
+                            linkedDevices = linkedDevices,
+                            onGenerateNewPin = {
+                                if (NetworkConnectivityHelper.isNetworkAvailable(context)) {
+                                    viewModel.generateNewPin()
+                                    networkFailureMessage = null
+                                } else {
+                                    networkFailureMessage = "No se pudo generar el PIN: Se requiere conexión a Internet (Wi-Fi o Datos)."
+                                    pendingGenerationAction = { viewModel.generateNewPin() }
+                                    Toast.makeText(
+                                        context,
+                                        "Se requiere conexión a Internet (Wi-Fi o Datos) para generar el código de vinculación.",
+                                        Toast.LENGTH_LONG
+                                    ).show()
+                                }
+                            },
+                            onGenerateNewQr = {
+                                if (NetworkConnectivityHelper.isNetworkAvailable(context)) {
+                                    viewModel.generateNewQrToken()
+                                    networkFailureMessage = null
+                                } else {
+                                    networkFailureMessage = "No se pudo generar el Código QR: Se requiere conexión a Internet (Wi-Fi o Datos)."
+                                    pendingGenerationAction = { viewModel.generateNewQrToken() }
+                                    Toast.makeText(
+                                        context,
+                                        "Se requiere conexión a Internet (Wi-Fi o Datos) para generar el código de vinculación.",
+                                        Toast.LENGTH_LONG
+                                    ).show()
+                                }
+                            },
+                            onUnlinkDevice = { viewModel.unlinkDevice(it, context) },
+                            onUpdateDeviceStatus = { device, status ->
+                                viewModel.updateDeviceStatus(device, status)
+                            },
+                            onManualLinkDevice = { name, userAssigned ->
+                                viewModel.linkDevice(name = name, userAssigned = userAssigned)
                             }
-                        },
-                        currentPin = currentPin,
-                        currentQrSessionToken = currentQrSessionToken,
-                        pinCountdownText = pinCountdownText,
-                        qrCountdownText = qrCountdownText,
-                        linkedDevices = linkedDevices,
-                        onGenerateNewPin = {
-                            if (NetworkConnectivityHelper.isNetworkAvailable(context)) {
-                                viewModel.generateNewPin()
-                                networkFailureMessage = null
-                            } else {
-                                networkFailureMessage = "No se pudo generar el PIN: Se requiere conexión a Internet (Wi-Fi o Datos)."
-                                pendingGenerationAction = { viewModel.generateNewPin() }
-                                Toast.makeText(
-                                    context,
-                                    "Se requiere conexión a Internet (Wi-Fi o Datos) para generar el código de vinculación.",
-                                    Toast.LENGTH_LONG
-                                ).show()
-                            }
-                        },
-                        onGenerateNewQr = {
-                            if (NetworkConnectivityHelper.isNetworkAvailable(context)) {
-                                viewModel.generateNewQrToken()
-                                networkFailureMessage = null
-                            } else {
-                                networkFailureMessage = "No se pudo generar el Código QR: Se requiere conexión a Internet (Wi-Fi o Datos)."
-                                pendingGenerationAction = { viewModel.generateNewQrToken() }
-                                Toast.makeText(
-                                    context,
-                                    "Se requiere conexión a Internet (Wi-Fi o Datos) para generar el código de vinculación.",
-                                    Toast.LENGTH_LONG
-                                ).show()
-                            }
-                        },
-                        onUnlinkDevice = { viewModel.unlinkDevice(it, context) },
-                        onUpdateDeviceStatus = { device, status ->
-                            viewModel.updateDeviceStatus(device, status)
-                        },
-                        onManualLinkDevice = { name, userAssigned ->
-                            viewModel.linkDevice(name = name, userAssigned = userAssigned)
-                        }
-                    )
-                }
+                        )
+                    }
 
-                UserRoleMode.RECEPTIONIST -> {
-                    ReceptionistInterfaceContent(
-                        receptionMode = receptionMode,
-                        onReceptionModeChange = { receptionMode = it },
-                        currentPin = currentPin,
-                        pinValidationResult = pinValidationResult,
-                        decodedQrPayload = decodedQrPayload,
-                        linkedDevices = linkedDevices,
-                        onValidatePin = { inputPin ->
-                            viewModel.validatePin(inputPin)
-                        },
-                        onDecodeQrToken = { token ->
-                            viewModel.decodeQrToken(token)
-                        },
-                        onLinkDevice = { name, userAssigned, deviceId ->
-                            viewModel.linkDevice(
-                                name = name,
-                                userAssigned = userAssigned,
-                                deviceId = deviceId
-                            )
-                        },
-                        onClearValidationResult = {
-                            viewModel.clearPinValidationResult()
-                        },
-                        onOpenQrScanner = {
-                            showCameraScannerDialog = true
-                        }
-                    )
+                    UserRoleMode.RECEPTIONIST -> {
+                        ReceptionistInterfaceContent(
+                            receptionMode = receptionMode,
+                            onReceptionModeChange = { receptionMode = it },
+                            currentPin = currentPin,
+                            pinValidationResult = pinValidationResult,
+                            decodedQrPayload = decodedQrPayload,
+                            linkedDevices = linkedDevices,
+                            onValidatePin = { inputPin ->
+                                viewModel.validatePin(inputPin)
+                            },
+                            onDecodeQrToken = { token ->
+                                viewModel.decodeQrToken(token)
+                            },
+                            onLinkDevice = { name, userAssigned, deviceId ->
+                                viewModel.linkDevice(
+                                    name = name,
+                                    userAssigned = userAssigned,
+                                    deviceId = deviceId
+                                )
+                            },
+                            onClearValidationResult = {
+                                viewModel.clearPinValidationResult()
+                            },
+                            onOpenQrScanner = {
+                                showCameraScannerDialog = true
+                            }
+                        )
+                    }
                 }
             }
         }
