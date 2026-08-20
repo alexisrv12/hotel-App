@@ -36,6 +36,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import com.example.utils.HotelNotificationHelper
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -44,6 +45,7 @@ enum class Screen {
     LINK_DEVICE,
     CREATE_USER,
     SETUP_WIZARD,
+    PERMISSIONS,
     MAIN,
     RECEPCION,
     CHECKIN_FORM,
@@ -62,7 +64,9 @@ enum class Screen {
     GERENTE_USERS,
     GERENTE_BACKUP,
     GERENTE_DEVICE_LINKING,
-    GERENTE_HOUSEKEEPING
+    GERENTE_HOUSEKEEPING,
+    FINANCIAL_OVERVIEW,
+    INVENTORY_SCANNER
 }
 
 sealed class AlertEvent {
@@ -457,6 +461,16 @@ class HotelViewModel(application: Application) : AndroidViewModel(application) {
                 notes = notes,
                 receptionistName = _activeUser.value
             )
+            val room = rooms.value.find { it.id == roomId }
+            val roomNum = room?.roomNumber ?: roomId.toString()
+            val hours = (rate.durationMinutes / 60).toInt().coerceAtLeast(1)
+            HotelNotificationHelper.sendGuestCheckInAlert(
+                context = getApplication(),
+                roomNumber = roomNum,
+                guestName = clientName,
+                durationHours = hours,
+                totalAmount = rate.price
+            )
             _userMessage.value = "Hospedaje registrado exitosamente."
         }
     }
@@ -475,12 +489,19 @@ class HotelViewModel(application: Application) : AndroidViewModel(application) {
         notes: String? = null
     ) {
         viewModelScope.launch {
+            val room = rooms.value.find { it.id == roomId }
+            val roomNum = room?.roomNumber ?: roomId.toString()
             repository.finishStay(
                 roomId = roomId,
                 paymentMethod = paymentMethod,
                 receptionistName = _activeUser.value,
                 finalPrice = finalPrice,
                 extraNotes = notes
+            )
+            HotelNotificationHelper.sendGuestCheckOutAlert(
+                context = getApplication(),
+                roomNumber = roomNum,
+                totalAmount = finalPrice
             )
             _userMessage.value = "Hospedaje finalizado. Insumos descontados automáticamente."
         }
@@ -599,6 +620,23 @@ class HotelViewModel(application: Application) : AndroidViewModel(application) {
                     details = "Reabastecimiento de +$additionalQuantity ${supply.unit} de ${supply.name}. Stock actual: $newStock"
                 )
                 _userMessage.value = "Inventario de ${supply.name} reabastecido. Nuevo stock: $newStock ${supply.unit}"
+            }
+        }
+    }
+
+    fun updateSupplyStock(supplyId: Long, newStockQuantity: Double) {
+        viewModelScope.launch {
+            val currentList = supplies.value
+            val supply = currentList.find { it.id == supplyId }
+            if (supply != null) {
+                val updated = supply.copy(stockCurrent = newStockQuantity)
+                repository.saveSupply(updated)
+                repository.logAudit(
+                    username = _activeUser.value,
+                    action = "AJUSTE_INVENTARIO_QR",
+                    details = "Ajuste de inventario vía QR para ${supply.name}. Nuevo stock: $newStockQuantity ${supply.unit}"
+                )
+                _userMessage.value = "Inventario de ${supply.name} actualizado a $newStockQuantity ${supply.unit}"
             }
         }
     }

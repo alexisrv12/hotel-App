@@ -1,10 +1,15 @@
 package com.example
 
+import android.Manifest
+import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
 import android.widget.Toast
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
@@ -14,6 +19,8 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.ui.HotelViewModel
 import com.example.ui.Screen
@@ -35,11 +42,17 @@ import com.example.ui.screens.GerenteSettingsScreen
 import com.example.ui.screens.GerenteSuppliesScreen
 import com.example.ui.screens.GerenteUsersScreen
 import com.example.ui.screens.GuestCheckInScreen
+import com.example.ui.screens.FinancialOverviewScreen
+import com.example.ui.screens.InventoryScannerScreen
 import com.example.ui.screens.LinkDeviceScreen
 import com.example.ui.screens.LoginScreen
 import com.example.ui.screens.MainScreen
+import com.example.ui.screens.PermissionRequestScreen
 import com.example.ui.screens.RecepcionScreen
 import com.example.ui.theme.HotelRiveraTheme
+import com.example.utils.HotelNotificationHelper
+import com.example.utils.LocationProximityHelper
+import com.example.data.services.HotelFirestoreNotificationService
 
 class MainActivity : ComponentActivity() {
 
@@ -73,7 +86,53 @@ fun HotelRiveraApp(viewModel: HotelViewModel) {
     val pinError by viewModel.pinError.collectAsStateWithLifecycle()
     val userMessage by viewModel.userMessage.collectAsStateWithLifecycle()
 
-    val context = androidx.compose.ui.platform.LocalContext.current
+    val context = LocalContext.current
+
+    // Initialize Notification Channels and Firestore Listener on startup
+    LaunchedEffect(Unit) {
+        HotelNotificationHelper.createNotificationChannels(context)
+        HotelFirestoreNotificationService.start(context)
+    }
+
+    // Runtime permissions and location proximity handler
+    val permissionsToRequest = buildList {
+        add(Manifest.permission.CAMERA)
+        add(Manifest.permission.ACCESS_FINE_LOCATION)
+        add(Manifest.permission.ACCESS_COARSE_LOCATION)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            add(Manifest.permission.POST_NOTIFICATIONS)
+        }
+    }
+
+    val permissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestMultiplePermissions()
+    ) { permissionsResult ->
+        val cameraGranted = permissionsResult[Manifest.permission.CAMERA] ?: false
+        val fineLocationGranted = permissionsResult[Manifest.permission.ACCESS_FINE_LOCATION] ?: false
+        val notificationsGranted = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            permissionsResult[Manifest.permission.POST_NOTIFICATIONS] ?: false
+        } else true
+
+        // Proximity tracking check when location is granted
+        if (fineLocationGranted) {
+            LocationProximityHelper.getCurrentLocation(context) { location ->
+                location?.let {
+                    val inPerimeter = LocationProximityHelper.isWithinHotelPerimeter(it.latitude, it.longitude)
+                    val distance = LocationProximityHelper.calculateDistanceToHotel(it.latitude, it.longitude)
+                    // Verified proximity available for check-ins
+                }
+            }
+        }
+    }
+
+    LaunchedEffect(Unit) {
+        val permissionsNeeded = permissionsToRequest.filter { permission ->
+            ContextCompat.checkSelfPermission(context, permission) != PackageManager.PERMISSION_GRANTED
+        }
+        if (permissionsNeeded.isNotEmpty()) {
+            permissionLauncher.launch(permissionsNeeded.toTypedArray())
+        }
+    }
 
     LaunchedEffect(userMessage) {
         userMessage?.let { msg ->
@@ -84,6 +143,13 @@ fun HotelRiveraApp(viewModel: HotelViewModel) {
 
     Box(modifier = Modifier.fillMaxSize()) {
         when (currentScreen) {
+            Screen.PERMISSIONS -> {
+                PermissionRequestScreen(
+                    onAllPermissionsGranted = { viewModel.navigateTo(Screen.LOGIN) },
+                    onDismissOrContinue = { viewModel.navigateTo(Screen.LOGIN) }
+                )
+            }
+
             Screen.LOGIN -> {
                 LoginScreen(
                     hotelViewModel = viewModel,
@@ -258,6 +324,20 @@ fun HotelRiveraApp(viewModel: HotelViewModel) {
             Screen.GERENTE_DEVICE_LINKING -> {
                 DeviceDashboardScreen(
                     onBackToManagerMenu = { viewModel.navigateTo(Screen.GERENTE_DASHBOARD) }
+                )
+            }
+
+            Screen.FINANCIAL_OVERVIEW -> {
+                FinancialOverviewScreen(
+                    viewModel = viewModel,
+                    onBack = { viewModel.navigateTo(Screen.GERENTE_DASHBOARD) }
+                )
+            }
+
+            Screen.INVENTORY_SCANNER -> {
+                InventoryScannerScreen(
+                    viewModel = viewModel,
+                    onBack = { viewModel.navigateTo(Screen.GERENTE_SUPPLIES) }
                 )
             }
         }
