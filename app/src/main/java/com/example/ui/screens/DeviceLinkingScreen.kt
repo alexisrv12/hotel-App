@@ -107,6 +107,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.data.entities.DeviceConnectionStatus
 import com.example.data.entities.DeviceEntity
 import com.example.ui.viewmodel.DeviceLinkingViewModel
+import com.example.utils.NetworkConnectivityHelper
 import com.example.utils.PinValidationResult
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -281,8 +282,28 @@ fun DeviceLinkingScreen(
                         pinCountdownText = pinCountdownText,
                         qrCountdownText = qrCountdownText,
                         linkedDevices = linkedDevices,
-                        onGenerateNewPin = { viewModel.generateNewPin() },
-                        onGenerateNewQr = { viewModel.generateNewQrToken() },
+                        onGenerateNewPin = {
+                            if (NetworkConnectivityHelper.isNetworkAvailable(context)) {
+                                viewModel.generateNewPin()
+                            } else {
+                                Toast.makeText(
+                                    context,
+                                    "Se requiere conexión a Internet (Wi-Fi o Datos) para generar el código de vinculación.",
+                                    Toast.LENGTH_LONG
+                                ).show()
+                            }
+                        },
+                        onGenerateNewQr = {
+                            if (NetworkConnectivityHelper.isNetworkAvailable(context)) {
+                                viewModel.generateNewQrToken()
+                            } else {
+                                Toast.makeText(
+                                    context,
+                                    "Se requiere conexión a Internet (Wi-Fi o Datos) para generar el código de vinculación.",
+                                    Toast.LENGTH_LONG
+                                ).show()
+                            }
+                        },
                         onUnlinkDevice = { viewModel.unlinkDevice(it, context) },
                         onUpdateDeviceStatus = { device, status ->
                             viewModel.updateDeviceStatus(device, status)
@@ -379,7 +400,17 @@ private fun ManagerInterfaceContent(
                 ) {
                     SegmentedButton(
                         selected = managerMode == ManagerLinkingMode.QR,
-                        onClick = { onManagerModeChange(ManagerLinkingMode.QR) },
+                        onClick = {
+                            if (NetworkConnectivityHelper.isNetworkAvailable(context)) {
+                                onManagerModeChange(ManagerLinkingMode.QR)
+                            } else {
+                                Toast.makeText(
+                                    context,
+                                    "Se requiere conexión a Internet (Wi-Fi o Datos) para generar el código de vinculación.",
+                                    Toast.LENGTH_LONG
+                                ).show()
+                            }
+                        },
                         shape = SegmentedButtonDefaults.itemShape(index = 0, count = 2),
                         modifier = Modifier.testTag("qr_option_button")
                     ) {
@@ -398,7 +429,17 @@ private fun ManagerInterfaceContent(
 
                     SegmentedButton(
                         selected = managerMode == ManagerLinkingMode.PIN,
-                        onClick = { onManagerModeChange(ManagerLinkingMode.PIN) },
+                        onClick = {
+                            if (NetworkConnectivityHelper.isNetworkAvailable(context)) {
+                                onManagerModeChange(ManagerLinkingMode.PIN)
+                            } else {
+                                Toast.makeText(
+                                    context,
+                                    "Se requiere conexión a Internet (Wi-Fi o Datos) para generar el código de vinculación.",
+                                    Toast.LENGTH_LONG
+                                ).show()
+                            }
+                        },
                         shape = SegmentedButtonDefaults.itemShape(index = 1, count = 2),
                         modifier = Modifier.testTag("pin_option_button")
                     ) {
