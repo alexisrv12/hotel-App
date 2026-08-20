@@ -14,6 +14,7 @@ import com.example.data.entities.DeviceEntity
 import com.example.data.entities.HousekeepingTaskEntity
 import com.example.data.entities.HotelSettingEntity
 import com.example.data.entities.InvoiceEntity
+import com.example.data.entities.MaintenanceRequestEntity
 import com.example.data.entities.ProductEntity
 import com.example.data.entities.RoomEntity
 import com.example.data.entities.RoomStatus
@@ -41,9 +42,10 @@ import kotlinx.coroutines.launch
         AuditLogEntity::class,
         DeviceEntity::class,
         HousekeepingTaskEntity::class,
+        MaintenanceRequestEntity::class,
         SharedAppStateBackupEntity::class
     ],
-    version = 7,
+    version = 8,
     exportSchema = false
 )
 abstract class HotelDatabase : RoomDatabase() {

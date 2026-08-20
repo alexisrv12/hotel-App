@@ -9,6 +9,7 @@ import androidx.room.Delete
 import com.example.data.entities.HousekeepingTaskEntity
 import com.example.data.entities.HotelSettingEntity
 import com.example.data.entities.InvoiceEntity
+import com.example.data.entities.MaintenanceRequestEntity
 import com.example.data.entities.AuditLogEntity
 import com.example.data.entities.ProductEntity
 import com.example.data.entities.RoomEntity
@@ -193,4 +194,20 @@ interface HotelDao {
 
     @Query("DELETE FROM housekeeping_tasks WHERE id = :id")
     suspend fun deleteHousekeepingTaskById(id: Long)
+
+    // --- MAINTENANCE REQUESTS & BROKEN ITEMS ---
+    @Query("SELECT * FROM maintenance_requests ORDER BY reportedTimestamp DESC")
+    fun getAllMaintenanceRequests(): Flow<List<MaintenanceRequestEntity>>
+
+    @Query("SELECT * FROM maintenance_requests WHERE status != 'RESUELTO' ORDER BY reportedTimestamp DESC")
+    fun getActiveMaintenanceRequests(): Flow<List<MaintenanceRequestEntity>>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertMaintenanceRequest(request: MaintenanceRequestEntity): Long
+
+    @Update
+    suspend fun updateMaintenanceRequest(request: MaintenanceRequestEntity)
+
+    @Query("DELETE FROM maintenance_requests WHERE id = :id")
+    suspend fun deleteMaintenanceRequestById(id: Long)
 }

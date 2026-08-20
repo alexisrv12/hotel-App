@@ -31,8 +31,12 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Alarm
 import androidx.compose.material.icons.filled.Calculate
 import androidx.compose.material.icons.filled.CleaningServices
+import androidx.compose.material.icons.filled.CalendarMonth
+import androidx.compose.material.icons.filled.GridView
+import androidx.compose.material.icons.filled.Handyman
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Hotel
+import androidx.compose.material.icons.filled.NetworkCheck
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.QrCodeScanner
 import androidx.compose.material.icons.filled.Search
@@ -40,7 +44,11 @@ import androidx.compose.material.icons.filled.Warning
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.window.Dialog
+import com.example.ui.components.GuestBookingQrScannerDialog
+import com.example.ui.components.InventoryThresholdAlertBanner
+import com.example.ui.components.MaintenanceRequestFormDialog
 import com.example.ui.components.QRScannerView
+import com.example.ui.components.ReceptionCalendarComponent
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -61,6 +69,8 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Tab
+import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -110,6 +120,9 @@ fun RecepcionScreen(
     onBack: () -> Unit
 ) {
     val context = LocalContext.current
+    val stayHistory by viewModel.stayHistory.collectAsStateWithLifecycle()
+    val lowStockSupplies by viewModel.lowStockSupplies.collectAsStateWithLifecycle()
+    var selectedReceptionTab by remember { mutableIntStateOf(0) } // 0: Cuadrícula, 1: Calendario & Check-Ins
     var selectedFilter by remember { mutableStateOf("TODAS") }
     var searchQuery by remember { mutableStateOf("") }
 
@@ -120,6 +133,8 @@ fun RecepcionScreen(
     var showRecentHistoryDialog by remember { mutableStateOf(false) }
     var showQRScannerDialog by remember { mutableStateOf(false) }
     var showInvoiceCalculatorDialog by remember { mutableStateOf(false) }
+    var showMaintenanceReportDialog by remember { mutableStateOf(false) }
+    var selectedRoomForMaintenance by remember { mutableStateOf<String?>(null) }
     var activeInvoiceToShow by remember { mutableStateOf<InvoiceEntity?>(null) }
 
     // Calculate Summary Counts
@@ -156,6 +171,15 @@ fun RecepcionScreen(
                 },
                 actions = {
                     IconButton(
+                        onClick = { selectedReceptionTab = if (selectedReceptionTab == 0) 1 else 0 },
+                        modifier = Modifier.testTag("toggle_calendar_view_button")
+                    ) {
+                        Icon(
+                            imageVector = if (selectedReceptionTab == 0) Icons.Default.CalendarMonth else Icons.Default.GridView,
+                            contentDescription = "Alternar Vista de Calendario / Cuadrícula"
+                        )
+                    }
+                    IconButton(
                         onClick = onNavigateToCheckInForm,
                         modifier = Modifier.testTag("new_checkin_form_top_button")
                     ) {
@@ -166,6 +190,15 @@ fun RecepcionScreen(
                         modifier = Modifier.testTag("scan_qr_code_top_button")
                     ) {
                         Icon(Icons.Default.QrCodeScanner, contentDescription = "Escanear QR de Habitación / Reserva")
+                    }
+                    IconButton(
+                        onClick = {
+                            selectedRoomForMaintenance = null
+                            showMaintenanceReportDialog = true
+                        },
+                        modifier = Modifier.testTag("report_broken_item_top_button")
+                    ) {
+                        Icon(Icons.Default.Handyman, contentDescription = "Reportar Avería o Mantenimiento")
                     }
                     IconButton(
                         onClick = { showInvoiceCalculatorDialog = true },
@@ -192,104 +225,169 @@ fun RecepcionScreen(
                 .padding(padding)
                 .background(MaterialTheme.colorScheme.background)
         ) {
-            // Status Counters Header
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 12.dp),
-                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            // Reception Navigation Tabs: Cuadrícula vs Calendario
+            TabRow(
+                selectedTabIndex = selectedReceptionTab,
+                containerColor = HotelNavy.copy(alpha = 0.05f),
+                contentColor = HotelNavy,
+                modifier = Modifier.fillMaxWidth()
             ) {
-                StatusCounterCard(
-                    title = "Disponibles",
-                    count = countAvailable,
-                    color = StatusGreen,
-                    modifier = Modifier.weight(1f)
-                )
-                StatusCounterCard(
-                    title = "Ocupadas",
-                    count = countOccupied,
-                    color = StatusRed,
-                    modifier = Modifier.weight(1f)
-                )
-                StatusCounterCard(
-                    title = "Limpieza",
-                    count = countCleaning,
-                    color = StatusYellow,
-                    modifier = Modifier.weight(1f)
-                )
-            }
-
-            // Search and Filter Bar
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp)
-            ) {
-                OutlinedTextField(
-                    value = searchQuery,
-                    onValueChange = { searchQuery = it },
-                    placeholder = { Text("Buscar habitación o cliente...") },
-                    leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(52.dp),
-                    shape = RoundedCornerShape(12.dp),
-                    singleLine = true
-                )
-
-                Spacer(modifier = Modifier.height(8.dp))
-
-                Row(
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    FilterChip(
-                        selected = selectedFilter == "TODAS",
-                        onClick = { selectedFilter = "TODAS" },
-                        label = { Text("Todas (${rooms.size})") }
-                    )
-                    FilterChip(
-                        selected = selectedFilter == "DISPONIBLE",
-                        onClick = { selectedFilter = "DISPONIBLE" },
-                        label = { Text("Disponibles ($countAvailable)") }
-                    )
-                    FilterChip(
-                        selected = selectedFilter == "OCUPADA",
-                        onClick = { selectedFilter = "OCUPADA" },
-                        label = { Text("Ocupadas ($countOccupied)") }
-                    )
-                    FilterChip(
-                        selected = selectedFilter == "LIMPIEZA",
-                        onClick = { selectedFilter = "LIMPIEZA" },
-                        label = { Text("Limpieza ($countCleaning)") }
-                    )
-                }
-            }
-
-            Spacer(modifier = Modifier.height(8.dp))
-
-            // Room Cards Grid
-            LazyVerticalGrid(
-                columns = GridCells.Adaptive(minSize = 165.dp),
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(horizontal = 16.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp),
-                horizontalArrangement = Arrangement.spacedBy(12.dp)
-            ) {
-                items(filteredRooms, key = { it.id }) { room ->
-                    RoomCard(
-                        room = room,
-                        currentTimeMillis = currentTimeMillis,
-                        onClick = {
-                            when (room.status) {
-                                RoomStatus.DISPONIBLE -> selectedRoomForCheckIn = room
-                                RoomStatus.OCUPADA -> selectedRoomForOccupied = room
-                                RoomStatus.PENDIENTE_LIMPIEZA, RoomStatus.EN_LIMPIEZA -> selectedRoomForCleaning = room
-                                else -> selectedRoomForCheckIn = room
-                            }
+                Tab(
+                    selected = selectedReceptionTab == 0,
+                    onClick = { selectedReceptionTab = 0 },
+                    text = {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Icon(Icons.Default.GridView, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Text("Habitaciones (Cuadrícula)", fontWeight = FontWeight.Bold, fontSize = 13.sp)
                         }
-                    )
+                    },
+                    modifier = Modifier.testTag("tab_reception_grid")
+                )
+                Tab(
+                    selected = selectedReceptionTab == 1,
+                    onClick = { selectedReceptionTab = 1 },
+                    text = {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Icon(Icons.Default.CalendarMonth, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Text("Calendario y Check-Ins", fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                        }
+                    },
+                    modifier = Modifier.testTag("tab_reception_calendar")
+                )
+            }
+
+            if (selectedReceptionTab == 1) {
+                // CALENDAR & UPCOMING CHECK-INS VIEW COMPONENT
+                ReceptionCalendarComponent(
+                    rooms = rooms,
+                    stayHistory = stayHistory,
+                    currentTimeMillis = currentTimeMillis,
+                    onRoomCheckInClick = { selectedRoomForCheckIn = it },
+                    onRoomOccupiedClick = { selectedRoomForOccupied = it },
+                    onRoomCleaningClick = { selectedRoomForCleaning = it },
+                    onNewCheckInFormClick = onNavigateToCheckInForm,
+                    modifier = Modifier.fillMaxSize()
+                )
+            } else {
+                // DEFAULT GRID VIEW
+                Column(
+                    modifier = Modifier.fillMaxSize()
+                ) {
+                    // Automated Low Stock Inventory Threshold Alert Banner
+                    if (lowStockSupplies.isNotEmpty()) {
+                        InventoryThresholdAlertBanner(
+                            lowStockSupplies = lowStockSupplies,
+                            viewModel = viewModel,
+                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
+                        )
+                    }
+
+                    // Status Counters Header
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp, vertical = 12.dp),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        StatusCounterCard(
+                            title = "Disponibles",
+                            count = countAvailable,
+                            color = StatusGreen,
+                            modifier = Modifier.weight(1f)
+                        )
+                        StatusCounterCard(
+                            title = "Ocupadas",
+                            count = countOccupied,
+                            color = StatusRed,
+                            modifier = Modifier.weight(1f)
+                        )
+                        StatusCounterCard(
+                            title = "Limpieza",
+                            count = countCleaning,
+                            color = StatusYellow,
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+
+                    // Search and Filter Bar
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp)
+                    ) {
+                        OutlinedTextField(
+                            value = searchQuery,
+                            onValueChange = { searchQuery = it },
+                            placeholder = { Text("Buscar habitación o cliente...") },
+                            leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(52.dp),
+                            shape = RoundedCornerShape(12.dp),
+                            singleLine = true
+                        )
+
+                        Spacer(modifier = Modifier.height(8.dp))
+
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            FilterChip(
+                                selected = selectedFilter == "TODAS",
+                                onClick = { selectedFilter = "TODAS" },
+                                label = { Text("Todas (${rooms.size})") }
+                            )
+                            FilterChip(
+                                selected = selectedFilter == "DISPONIBLE",
+                                onClick = { selectedFilter = "DISPONIBLE" },
+                                label = { Text("Disponibles ($countAvailable)") }
+                            )
+                            FilterChip(
+                                selected = selectedFilter == "OCUPADA",
+                                onClick = { selectedFilter = "OCUPADA" },
+                                label = { Text("Ocupadas ($countOccupied)") }
+                            )
+                            FilterChip(
+                                selected = selectedFilter == "LIMPIEZA",
+                                onClick = { selectedFilter = "LIMPIEZA" },
+                                label = { Text("Limpieza ($countCleaning)") }
+                            )
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    // Room Cards Grid
+                    LazyVerticalGrid(
+                        columns = GridCells.Adaptive(minSize = 165.dp),
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(horizontal = 16.dp),
+                        verticalArrangement = Arrangement.spacedBy(12.dp),
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        items(filteredRooms, key = { it.id }) { room ->
+                            RoomCard(
+                                room = room,
+                                currentTimeMillis = currentTimeMillis,
+                                onClick = {
+                                    when (room.status) {
+                                        RoomStatus.DISPONIBLE -> selectedRoomForCheckIn = room
+                                        RoomStatus.OCUPADA -> selectedRoomForOccupied = room
+                                        RoomStatus.PENDIENTE_LIMPIEZA, RoomStatus.EN_LIMPIEZA -> selectedRoomForCleaning = room
+                                        else -> selectedRoomForCheckIn = room
+                                    }
+                                }
+                            )
+                        }
+                    }
                 }
             }
         }
@@ -351,6 +449,10 @@ fun RecepcionScreen(
                         }
                     )
                 }
+            },
+            onReportMaintenance = {
+                selectedRoomForMaintenance = room.roomNumber
+                showMaintenanceReportDialog = true
             }
         )
     }
@@ -363,6 +465,10 @@ fun RecepcionScreen(
             onUpdateStatus = { newStatus ->
                 viewModel.updateRoomCleaningStatus(room.id, newStatus)
                 selectedRoomForCleaning = null
+            },
+            onReportMaintenance = {
+                selectedRoomForMaintenance = room.roomNumber
+                showMaintenanceReportDialog = true
             }
         )
     }
@@ -375,66 +481,29 @@ fun RecepcionScreen(
         )
     }
 
-    // --- QR SCANNER DIALOG (ZXing integration) ---
+    // --- GUEST BOOKING QR CODE SCANNER MODULE (ZXing camera + Instant Check-In) ---
     if (showQRScannerDialog) {
-        Dialog(onDismissRequest = { showQRScannerDialog = false }) {
-            Surface(
-                shape = RoundedCornerShape(16.dp),
-                color = MaterialTheme.colorScheme.surface,
-                tonalElevation = 8.dp,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(16.dp)
-            ) {
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(16.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally
-                ) {
-                    Text(
-                        text = "Escáner QR de Habitación o Reserva",
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold,
-                        color = HotelNavy
-                    )
-                    Spacer(modifier = Modifier.height(4.dp))
-                    Text(
-                        text = "Apunte la cámara hacia el código QR de la habitación para rápida identificación y actualización de estado.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        textAlign = TextAlign.Center
-                    )
-                    Spacer(modifier = Modifier.height(12.dp))
-
-                    QRScannerView(
-                        onQrCodeScanned = { scannedCode ->
-                            showQRScannerDialog = false
-                            val digitsMatch = Regex("""\b\d{1,4}\b""").find(scannedCode)?.value
-                            val matchedRoom = rooms.find { room ->
-                                room.roomNumber.equals(scannedCode.trim(), ignoreCase = true) ||
-                                        (digitsMatch != null && room.roomNumber == digitsMatch) ||
-                                        scannedCode.contains("Habitación ${room.roomNumber}", ignoreCase = true) ||
-                                        scannedCode.contains("ROOM:${room.roomNumber}", ignoreCase = true)
-                            }
-
-                            if (matchedRoom != null) {
-                                Toast.makeText(context, "QR Escaneado: Habitación ${matchedRoom.roomNumber} (${matchedRoom.status})", Toast.LENGTH_LONG).show()
-                                when (matchedRoom.status) {
-                                    RoomStatus.DISPONIBLE -> selectedRoomForCheckIn = matchedRoom
-                                    RoomStatus.OCUPADA -> selectedRoomForOccupied = matchedRoom
-                                    RoomStatus.PENDIENTE_LIMPIEZA, RoomStatus.EN_LIMPIEZA -> selectedRoomForCleaning = matchedRoom
-                                    else -> selectedRoomForCheckIn = matchedRoom
-                                }
-                            } else {
-                                Toast.makeText(context, "No se encontró habitación vinculada al código: $scannedCode", Toast.LENGTH_LONG).show()
-                            }
-                        },
-                        onCloseScanner = { showQRScannerDialog = false }
-                    )
-                }
+        GuestBookingQrScannerDialog(
+            rooms = rooms,
+            timeRates = timeRates.filter { it.isActive },
+            viewModel = viewModel,
+            onDismiss = { showQRScannerDialog = false },
+            onInstantCheckInSuccess = { roomNum, guestName ->
+                showQRScannerDialog = false
             }
-        }
+        )
+    }
+
+    // --- MAINTENANCE & BROKEN ITEM REPORT DIALOG (CameraX + Room Form) ---
+    if (showMaintenanceReportDialog) {
+        MaintenanceRequestFormDialog(
+            viewModel = viewModel,
+            initialRoomNumber = selectedRoomForMaintenance,
+            onDismiss = {
+                showMaintenanceReportDialog = false
+                selectedRoomForMaintenance = null
+            }
+        )
     }
 
     // --- INVOICE CALCULATOR MODULE DIALOG ---
@@ -855,7 +924,8 @@ fun OccupiedRoomDialog(
     currentTimeMillis: Long,
     onDismiss: () -> Unit,
     onExtend: (extraMins: Long, extraPrice: Double) -> Unit,
-    onFinishStay: (paymentMethod: String, finalPrice: Double, discount: Double, generateInvoice: Boolean, notes: String?) -> Unit
+    onFinishStay: (paymentMethod: String, finalPrice: Double, discount: Double, generateInvoice: Boolean, notes: String?) -> Unit,
+    onReportMaintenance: () -> Unit = {}
 ) {
     var mode by remember { mutableStateOf("MAIN") } // "MAIN", "EXTEND", "FINISH"
 
@@ -923,6 +993,19 @@ fun OccupiedRoomDialog(
                         colors = ButtonDefaults.buttonColors(containerColor = HotelNavy)
                     ) {
                         Text("Extender Tiempo")
+                    }
+
+                    OutlinedButton(
+                        onClick = {
+                            onDismiss()
+                            onReportMaintenance()
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = HotelNavy)
+                    ) {
+                        Icon(Icons.Default.Handyman, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("Reportar Avería en Habitación 📷", fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
                     }
                 } else if (mode == "EXTEND") {
                     Text("Seleccione la extensión de tiempo:", fontWeight = FontWeight.Bold)
@@ -1068,7 +1151,8 @@ fun OccupiedRoomDialog(
 fun CleaningDialog(
     room: RoomEntity,
     onDismiss: () -> Unit,
-    onUpdateStatus: (newStatus: String) -> Unit
+    onUpdateStatus: (newStatus: String) -> Unit,
+    onReportMaintenance: () -> Unit = {}
 ) {
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -1095,6 +1179,19 @@ fun CleaningDialog(
                     colors = ButtonDefaults.buttonColors(containerColor = StatusGreen)
                 ) {
                     Text("Marcar Habitación Limpia y Disponible")
+                }
+
+                OutlinedButton(
+                    onClick = {
+                        onDismiss()
+                        onReportMaintenance()
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = ButtonDefaults.outlinedButtonColors(contentColor = HotelNavy)
+                ) {
+                    Icon(Icons.Default.Handyman, contentDescription = null, tint = HotelNavy, modifier = Modifier.size(16.dp))
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text("Reportar Avería con Foto 📷", fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
                 }
             }
         },

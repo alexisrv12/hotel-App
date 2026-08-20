@@ -5,6 +5,7 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -366,19 +367,22 @@ private fun DashboardMetricsBanner(
 ) {
     Surface(
         modifier = modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(16.dp),
+        shape = RoundedCornerShape(12.dp),
         color = MaterialTheme.colorScheme.surface,
-        tonalElevation = 2.dp
+        tonalElevation = 1.dp,
+        border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
     ) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(16.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
+                .padding(horizontal = 8.dp, vertical = 8.dp),
+            horizontalArrangement = Arrangement.SpaceEvenly,
             verticalAlignment = Alignment.CenterVertically
         ) {
             MetricBadgeItem(
-                title = "Total Terminales",
+                modifier = Modifier.weight(1f),
+                title = "Total",
+                subtitle = "Terminales",
                 count = totalDevices,
                 icon = Icons.Default.Smartphone,
                 badgeColor = MaterialTheme.colorScheme.primaryContainer,
@@ -387,13 +391,15 @@ private fun DashboardMetricsBanner(
 
             Divider(
                 modifier = Modifier
-                    .height(36.dp)
+                    .height(28.dp)
                     .width(1.dp),
-                color = MaterialTheme.colorScheme.outlineVariant
+                color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f)
             )
 
             MetricBadgeItem(
-                title = "Activas (Heartbeat)",
+                modifier = Modifier.weight(1f),
+                title = "Activas",
+                subtitle = "En línea",
                 count = activeCount,
                 icon = Icons.Default.Wifi,
                 badgeColor = Color(0xFFE8F5E9),
@@ -402,13 +408,15 @@ private fun DashboardMetricsBanner(
 
             Divider(
                 modifier = Modifier
-                    .height(36.dp)
+                    .height(28.dp)
                     .width(1.dp),
-                color = MaterialTheme.colorScheme.outlineVariant
+                color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f)
             )
 
             MetricBadgeItem(
-                title = "Solicitudes Pendientes",
+                modifier = Modifier.weight(1f),
+                title = "Pendientes",
+                subtitle = "Alertas",
                 count = pendingCount,
                 icon = Icons.Default.HourglassTop,
                 badgeColor = if (pendingCount > 0) Color(0xFFFFF3E0) else MaterialTheme.colorScheme.surfaceVariant,
@@ -421,41 +429,65 @@ private fun DashboardMetricsBanner(
 @Composable
 private fun MetricBadgeItem(
     title: String,
+    subtitle: String,
     count: Int,
     icon: androidx.compose.ui.graphics.vector.ImageVector,
     badgeColor: Color,
-    onClick: () -> Unit
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
 ) {
     Row(
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-        modifier = Modifier.clip(RoundedCornerShape(8.dp)).padding(4.dp)
+        horizontalArrangement = Arrangement.Center,
+        modifier = modifier
+            .clip(RoundedCornerShape(8.dp))
+            .clickable { onClick() }
+            .padding(horizontal = 4.dp, vertical = 2.dp)
     ) {
         Surface(
             shape = CircleShape,
             color = badgeColor,
-            modifier = Modifier.size(36.dp)
+            modifier = Modifier.size(28.dp)
         ) {
             Box(contentAlignment = Alignment.Center) {
                 Icon(
                     imageVector = icon,
                     contentDescription = null,
-                    modifier = Modifier.size(18.dp),
+                    modifier = Modifier.size(15.dp),
                     tint = HotelNavy
                 )
             }
         }
-        Column {
+        Spacer(modifier = Modifier.width(6.dp))
+        Column(
+            verticalArrangement = Arrangement.Center
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                Text(
+                    text = count.toString(),
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 14.sp
+                )
+                Text(
+                    text = title,
+                    style = MaterialTheme.typography.labelSmall,
+                    fontWeight = FontWeight.SemiBold,
+                    fontSize = 11.sp,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
             Text(
-                text = count.toString(),
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.Bold
-            )
-            Text(
-                text = title,
+                text = subtitle,
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
-                fontSize = 10.sp
+                fontSize = 9.sp,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
             )
         }
     }

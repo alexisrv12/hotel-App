@@ -25,10 +25,12 @@ object HotelNotificationHelper {
     const val CHANNEL_CHECKINS = "hotel_checkin_alerts_channel"
     const val CHANNEL_MAINTENANCE = "hotel_maintenance_tasks_channel"
     const val CHANNEL_SYSTEM_ALERTS = "hotel_system_alerts_channel"
+    const val CHANNEL_INVENTORY_ALERTS = "hotel_inventory_alerts_channel"
 
     private const val NOTIFICATION_ID_CHECKIN_BASE = 20000
     private const val NOTIFICATION_ID_MAINTENANCE_BASE = 30000
     private const val NOTIFICATION_ID_SYSTEM_BASE = 40000
+    private const val NOTIFICATION_ID_INVENTORY_BASE = 50000
 
     /**
      * Checks whether the application has granted POST_NOTIFICATIONS permission.
@@ -84,8 +86,19 @@ object HotelNotificationHelper {
                 description = "Notificaciones de auditoría, proximidad de recepción y turnos de personal"
             }
 
+            // 4. Room Inventory Low Stock Alerts Channel
+            val inventoryChannel = NotificationChannel(
+                CHANNEL_INVENTORY_ALERTS,
+                "Alertas de Inventario Bajo Umbral",
+                NotificationManager.IMPORTANCE_HIGH
+            ).apply {
+                description = "Alertas automáticas cuando insumos o productos caen por debajo del umbral mínimo"
+                enableVibration(true)
+                enableLights(true)
+            }
+
             notificationManager.createNotificationChannels(
-                listOf(checkInChannel, maintenanceChannel, systemChannel)
+                listOf(checkInChannel, maintenanceChannel, systemChannel, inventoryChannel)
             )
         }
     }
@@ -192,6 +205,63 @@ object HotelNotificationHelper {
     }
 
     /**
+     * Dispatches a notification when staff reports a broken item with optional photo evidence.
+     */
+    @SuppressLint("MissingPermission")
+    fun sendBrokenItemReportAlert(
+        context: Context,
+        roomNumber: String,
+        itemName: String,
+        category: String,
+        priority: String,
+        hasPhoto: Boolean,
+        reportedBy: String
+    ) {
+        if (!hasNotificationPermission(context)) return
+        createNotificationChannels(context)
+
+        val intent = Intent(context, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+        }
+        val pendingIntent = PendingIntent.getActivity(
+            context,
+            NOTIFICATION_ID_MAINTENANCE_BASE + 1000 + (roomNumber.toIntOrNull() ?: 99),
+            intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+        val photoBadge = if (hasPhoto) " 📷 [Foto Adjunta]" else ""
+        val builder = NotificationCompat.Builder(context, CHANNEL_MAINTENANCE)
+            .setSmallIcon(android.R.drawable.stat_sys_warning)
+            .setContentTitle("🛠️ Reporte de Avería: $itemName ($roomNumber)$photoBadge")
+            .setContentText("Prioridad: $priority • Reportado por: $reportedBy")
+            .setStyle(
+                NotificationCompat.BigTextStyle().bigText(
+                    "¡Nuevo reporte de daño/mantenimiento registrado!\n" +
+                            "• Ubicación: $roomNumber\n" +
+                            "• Objeto/Avería: $itemName ($category)\n" +
+                            "• Nivel de Urgencia: $priority\n" +
+                            "• Reportado por: $reportedBy\n" +
+                            (if (hasPhoto) "• Evidencia fotográfica capturada con cámara integrada disponible." else "• Sin foto adjunta.")
+                )
+            )
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setCategory(NotificationCompat.CATEGORY_STATUS)
+            .setAutoCancel(true)
+            .setContentIntent(pendingIntent)
+
+        try {
+            val notificationManager = NotificationManagerCompat.from(context)
+            val notificationId = NOTIFICATION_ID_MAINTENANCE_BASE + 1000 + (roomNumber.toIntOrNull() ?: 99)
+            notificationManager.notify(notificationId, builder.build())
+        } catch (e: SecurityException) {
+            e.printStackTrace()
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+    }
+
+    /**
      * Dispatches a notification for guest check-out and room release.
      */
     @SuppressLint("MissingPermission")
@@ -213,6 +283,60 @@ object HotelNotificationHelper {
         try {
             val notificationManager = NotificationManagerCompat.from(context)
             val notificationId = NOTIFICATION_ID_CHECKIN_BASE + 500 + (roomNumber.toIntOrNull() ?: 0)
+            notificationManager.notify(notificationId, builder.build())
+        } catch (e: SecurityException) {
+            e.printStackTrace()
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+    }
+
+    /**
+     * Dispatches an automated notification when an inventory item falls below its defined minimum threshold.
+     */
+    @SuppressLint("MissingPermission")
+    fun sendLowStockAlert(
+        context: Context,
+        itemId: Long,
+        itemName: String,
+        currentStock: Double,
+        minimumStock: Double,
+        unit: String
+    ) {
+        if (!hasNotificationPermission(context)) return
+        createNotificationChannels(context)
+
+        val intent = Intent(context, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+        }
+        val pendingIntent = PendingIntent.getActivity(
+            context,
+            (NOTIFICATION_ID_INVENTORY_BASE + itemId).toInt(),
+            intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+        val builder = NotificationCompat.Builder(context, CHANNEL_INVENTORY_ALERTS)
+            .setSmallIcon(android.R.drawable.stat_sys_warning)
+            .setContentTitle("⚠️ Inventario Bajo Umbral: $itemName")
+            .setContentText("Existencia: $currentStock $unit (Mínimo definido: $minimumStock $unit)")
+            .setStyle(
+                NotificationCompat.BigTextStyle().bigText(
+                    "¡Alerta de Inventario de Habitaciones!\n" +
+                            "El insumo '$itemName' ha caído por debajo del umbral mínimo de seguridad configurado.\n" +
+                            "Stock Actual: $currentStock $unit\n" +
+                            "Umbral Mínimo: $minimumStock $unit\n" +
+                            "Se requiere reabastecimiento para mantener operativas las habitaciones."
+                )
+            )
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setCategory(NotificationCompat.CATEGORY_ALARM)
+            .setAutoCancel(true)
+            .setContentIntent(pendingIntent)
+
+        try {
+            val notificationManager = NotificationManagerCompat.from(context)
+            val notificationId = (NOTIFICATION_ID_INVENTORY_BASE + itemId).toInt()
             notificationManager.notify(notificationId, builder.build())
         } catch (e: SecurityException) {
             e.printStackTrace()

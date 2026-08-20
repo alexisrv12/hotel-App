@@ -293,6 +293,13 @@ fun HotelRiveraApp(viewModel: HotelViewModel) {
                 )
             }
 
+            Screen.GERENTE_MAINTENANCE -> {
+                com.example.ui.screens.GerenteMaintenanceScreen(
+                    viewModel = viewModel,
+                    onBack = { viewModel.navigateTo(Screen.GERENTE_DASHBOARD) }
+                )
+            }
+
             Screen.GERENTE_AUDIT -> {
                 GerenteAuditScreen(
                     viewModel = viewModel,

@@ -5,6 +5,7 @@ import com.example.data.entities.AuditLogEntity
 import com.example.data.entities.HousekeepingTaskEntity
 import com.example.data.entities.HotelSettingEntity
 import com.example.data.entities.InvoiceEntity
+import com.example.data.entities.MaintenanceRequestEntity
 import com.example.data.entities.ProductEntity
 import com.example.data.entities.RoomEntity
 import com.example.data.entities.RoomStatus
@@ -33,6 +34,8 @@ class HotelRepository(private val dao: HotelDao) {
     val allInvoices: Flow<List<InvoiceEntity>> = dao.getAllInvoices()
     val allAuditLogs: Flow<List<AuditLogEntity>> = dao.getAllAuditLogs()
     val allHousekeepingTasks: Flow<List<HousekeepingTaskEntity>> = dao.getAllHousekeepingTasks()
+    val allMaintenanceRequests: Flow<List<MaintenanceRequestEntity>> = dao.getAllMaintenanceRequests()
+    val activeMaintenanceRequests: Flow<List<MaintenanceRequestEntity>> = dao.getActiveMaintenanceRequests()
 
     // --- AUDIT LOGGING ---
     suspend fun logAudit(username: String, action: String, details: String) {
@@ -408,4 +411,33 @@ class HotelRepository(private val dao: HotelDao) {
     }
 
     suspend fun deleteHousekeepingTask(id: Long) = dao.deleteHousekeepingTaskById(id)
+
+    // --- MAINTENANCE & BROKEN ITEMS OPERATIONS ---
+    suspend fun insertMaintenanceRequest(request: MaintenanceRequestEntity): Long {
+        val id = dao.insertMaintenanceRequest(request)
+        logAudit(
+            username = request.reportedBy,
+            action = "REPORTE_MANTENIMIENTO",
+            details = "Avería reportada: ${request.itemName} en ${request.roomNumber} (Prioridad: ${request.priority}, Foto: ${if (request.photoPath != null) "Sí" else "No"})"
+        )
+        return id
+    }
+
+    suspend fun updateMaintenanceRequest(request: MaintenanceRequestEntity) {
+        dao.updateMaintenanceRequest(request)
+        logAudit(
+            username = request.assignedTechnician ?: request.reportedBy,
+            action = "ACTUALIZAR_MANTENIMIENTO",
+            details = "Mantenimiento #${request.id} (${request.itemName}) actualizado a: ${request.status}"
+        )
+    }
+
+    suspend fun deleteMaintenanceRequest(id: Long, managerUsername: String = "Gerencia") {
+        dao.deleteMaintenanceRequestById(id)
+        logAudit(
+            username = managerUsername,
+            action = "ELIMINAR_MANTENIMIENTO",
+            details = "Ticket de mantenimiento #$id eliminado del sistema"
+        )
+    }
 }

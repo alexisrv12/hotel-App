@@ -28,6 +28,7 @@ import androidx.compose.material.icons.filled.Backup
 import androidx.compose.material.icons.filled.CleaningServices
 import androidx.compose.material.icons.filled.DarkMode
 import androidx.compose.material.icons.filled.Devices
+import androidx.compose.material.icons.filled.Handyman
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Inventory2
 import androidx.compose.material.icons.filled.LightMode
@@ -63,7 +64,9 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.ui.HotelViewModel
 import com.example.ui.Screen
+import com.example.ui.components.InventoryThresholdAlertBanner
 import com.example.ui.components.OccupancyTrendCard
+import com.example.ui.components.ThirtyDayOccupancyRevenueDashboard
 import com.example.ui.theme.HotelGold
 import com.example.ui.theme.HotelNavy
 
@@ -83,12 +86,16 @@ fun GerenteDashboardScreen(
     onBackToMain: () -> Unit
 ) {
     val isDarkTheme = hotelViewModel?.isDarkTheme?.collectAsState()?.value ?: false
-
     val lowStockSupplies = hotelViewModel?.lowStockSupplies?.collectAsState()?.value ?: emptyList()
+    val stayHistory = hotelViewModel?.stayHistory?.collectAsState()?.value ?: emptyList()
+    val invoices = hotelViewModel?.invoices?.collectAsState()?.value ?: emptyList()
+    val saleRecords = hotelViewModel?.saleRecords?.collectAsState()?.value ?: emptyList()
+    val rooms = hotelViewModel?.rooms?.collectAsState()?.value ?: emptyList()
 
     val menuItems = listOf(
         ManagerMenuItem("Habitaciones", "Gestión de cuartos y estado", Icons.Default.MeetingRoom, Screen.GERENTE_ROOMS, HotelNavy),
-        ManagerMenuItem("Limpieza", "Asignación y estado de mucamas", Icons.Default.CleaningServices, Screen.GERENTE_HOUSEKEEPING, HotelGold),
+        ManagerMenuItem("Mantenimiento", "Reporte de averías con foto y técnicos", Icons.Default.Handyman, Screen.GERENTE_MAINTENANCE, HotelGold),
+        ManagerMenuItem("Limpieza", "Asignación y estado de mucamas", Icons.Default.CleaningServices, Screen.GERENTE_HOUSEKEEPING, HotelNavy),
         ManagerMenuItem("Precios y Tarifas", "Edición de tarifas y promociones", Icons.Default.AttachMoney, Screen.GERENTE_RATES, HotelNavy),
         ManagerMenuItem("Tiempos", "Duración de horas, día y noche", Icons.Default.Timer, Screen.GERENTE_ROOMS, HotelGold),
         ManagerMenuItem("Historial", "Consulta general de hospedajes", Icons.Default.History, Screen.GERENTE_HISTORY, HotelNavy),
@@ -145,8 +152,22 @@ fun GerenteDashboardScreen(
                 .padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
-            // 7-Day Occupancy Trend Card
-            OccupancyTrendCard()
+            // Automated Low Stock Inventory Threshold Alert Banner
+            if (hotelViewModel != null && lowStockSupplies.isNotEmpty()) {
+                InventoryThresholdAlertBanner(
+                    lowStockSupplies = lowStockSupplies,
+                    viewModel = hotelViewModel,
+                    onNavigateToSupplies = { onNavigateToSection(Screen.GERENTE_SUPPLIES) }
+                )
+            }
+
+            // 30-Day Recharts-styled Occupancy & Revenue Dashboard Component
+            ThirtyDayOccupancyRevenueDashboard(
+                stayHistory = stayHistory,
+                invoices = invoices,
+                saleRecords = saleRecords,
+                totalRoomsCount = rooms.size.coerceAtLeast(1)
+            )
 
             Text(
                 text = "Panel de Control Gerencial",

@@ -82,6 +82,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.data.entities.InvoiceEntity
 import com.example.data.entities.SaleRecordEntity
 import com.example.ui.HotelViewModel
+import com.example.ui.components.ThirtyDayOccupancyRevenueDashboard
 import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Date
@@ -103,6 +104,7 @@ fun FinancialOverviewScreen(
 ) {
     val invoices by viewModel.invoices.collectAsStateWithLifecycle()
     val saleRecords by viewModel.saleRecords.collectAsStateWithLifecycle()
+    val stayHistory by viewModel.stayHistory.collectAsStateWithLifecycle()
     val rooms by viewModel.rooms.collectAsStateWithLifecycle()
 
     var selectedPeriodFilter by remember { mutableStateOf("7D") } // "TODAY", "7D", "30D", "ALL"
@@ -302,6 +304,16 @@ fun FinancialOverviewScreen(
                         }
                     }
                 }
+            }
+
+            // 30-Day Recharts-styled Occupancy & Revenue Dashboard Component
+            item {
+                ThirtyDayOccupancyRevenueDashboard(
+                    stayHistory = stayHistory,
+                    invoices = invoices,
+                    saleRecords = saleRecords,
+                    totalRoomsCount = rooms.size.coerceAtLeast(1)
+                )
             }
 
             // Tabs for Breakdown

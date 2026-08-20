@@ -15,6 +15,7 @@ import com.example.data.entities.AuditLogEntity
 import com.example.data.entities.HousekeepingTaskEntity
 import com.example.data.entities.HotelSettingEntity
 import com.example.data.entities.InvoiceEntity
+import com.example.data.entities.MaintenanceRequestEntity
 import com.example.data.entities.ProductEntity
 import com.example.data.entities.RoomEntity
 import com.example.data.entities.RoomStatus
@@ -65,6 +66,7 @@ enum class Screen {
     GERENTE_BACKUP,
     GERENTE_DEVICE_LINKING,
     GERENTE_HOUSEKEEPING,
+    GERENTE_MAINTENANCE,
     FINANCIAL_OVERVIEW,
     INVENTORY_SCANNER
 }
@@ -99,6 +101,7 @@ class HotelViewModel(application: Application) : AndroidViewModel(application) {
     val invoices: StateFlow<List<InvoiceEntity>>
     val auditLogs: StateFlow<List<AuditLogEntity>>
     val housekeepingTasks: StateFlow<List<HousekeepingTaskEntity>>
+    val maintenanceRequests: StateFlow<List<MaintenanceRequestEntity>>
     val lowStockSupplies: StateFlow<List<SupplyEntity>>
 
     // Live Clock for Room Timers
@@ -116,6 +119,7 @@ class HotelViewModel(application: Application) : AndroidViewModel(application) {
     // Track notified rooms to avoid continuous sound spam
     private val notified15MinRooms = mutableSetOf<Long>()
     private val notifiedEndedRooms = mutableSetOf<Long>()
+    private val notifiedLowStockSupplyIds = mutableSetOf<Long>()
 
     // Dark Mode Theme State
     private val _isDarkTheme = MutableStateFlow(false)
@@ -148,15 +152,37 @@ class HotelViewModel(application: Application) : AndroidViewModel(application) {
         invoices = repository.allInvoices.toStateFlow(emptyList())
         auditLogs = repository.allAuditLogs.toStateFlow(emptyList())
         housekeepingTasks = repository.allHousekeepingTasks.toStateFlow(emptyList())
+        maintenanceRequests = repository.allMaintenanceRequests.toStateFlow(emptyList())
 
         userRole = sessionRepo.userRoleFlow.toStateFlow(null)
         isDeviceAuthorized = sessionRepo.isDeviceAuthorizedFlow.toStateFlow(false)
 
-        // Low stock supplies derived state flow
+        // Automated low stock supplies monitoring and system notification dispatch
         val lowStockFlow = MutableStateFlow<List<SupplyEntity>>(emptyList())
         viewModelScope.launch {
             supplies.collectLatest { list ->
-                lowStockFlow.value = list.filter { it.stockCurrent <= it.stockMinimum }
+                val lowItems = list.filter { it.stockCurrent <= it.stockMinimum }
+                lowStockFlow.value = lowItems
+
+                // Automatically trigger system notifications for items below threshold
+                lowItems.forEach { item ->
+                    if (!notifiedLowStockSupplyIds.contains(item.id)) {
+                        notifiedLowStockSupplyIds.add(item.id)
+                        HotelNotificationHelper.sendLowStockAlert(
+                            context = getApplication(),
+                            itemId = item.id,
+                            itemName = item.name,
+                            currentStock = item.stockCurrent,
+                            minimumStock = item.stockMinimum,
+                            unit = item.unit
+                        )
+                    }
+                }
+
+                // Reset notification tracking for items that have been restocked above threshold
+                list.filter { it.stockCurrent > it.stockMinimum }.forEach { restocked ->
+                    notifiedLowStockSupplyIds.remove(restocked.id)
+                }
             }
         }
         lowStockSupplies = lowStockFlow.asStateFlow()
@@ -602,6 +628,79 @@ class HotelViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             repository.deleteHousekeepingTask(taskId)
             _userMessage.value = "Tarea de limpieza eliminada."
+        }
+    }
+
+    // --- MAINTENANCE & BROKEN ITEM REPORTING METHODS ---
+    fun reportBrokenItem(
+        roomNumber: String,
+        itemName: String,
+        category: String,
+        priority: String,
+        description: String,
+        photoPath: String?,
+        reportedBy: String? = null,
+        onSuccess: (Long) -> Unit = {}
+    ) {
+        viewModelScope.launch {
+            val reporter = reportedBy?.takeIf { it.isNotBlank() } ?: _activeUser.value
+            val request = MaintenanceRequestEntity(
+                roomNumber = roomNumber,
+                reportedBy = reporter,
+                itemName = itemName,
+                category = category,
+                priority = priority,
+                description = description,
+                photoPath = photoPath,
+                status = "PENDIENTE",
+                reportedTimestamp = System.currentTimeMillis()
+            )
+            val newId = repository.insertMaintenanceRequest(request)
+
+            // Send notification to manager and technicians
+            HotelNotificationHelper.sendBrokenItemReportAlert(
+                context = getApplication(),
+                roomNumber = roomNumber,
+                itemName = itemName,
+                category = category,
+                priority = priority,
+                hasPhoto = !photoPath.isNullOrBlank(),
+                reportedBy = reporter
+            )
+
+            _userMessage.value = "Reporte de avería (#$newId) registrado con éxito."
+            onSuccess(newId)
+        }
+    }
+
+    fun updateMaintenanceStatus(
+        requestId: Long,
+        newStatus: String,
+        assignedTechnician: String? = null,
+        resolutionNotes: String? = null,
+        repairCost: Double? = null
+    ) {
+        viewModelScope.launch {
+            val currentList = maintenanceRequests.value
+            val target = currentList.find { it.id == requestId }
+            if (target != null) {
+                val updated = target.copy(
+                    status = newStatus,
+                    assignedTechnician = assignedTechnician ?: target.assignedTechnician,
+                    resolutionNotes = resolutionNotes ?: target.resolutionNotes,
+                    repairCost = repairCost ?: target.repairCost,
+                    resolvedTimestamp = if (newStatus == "RESUELTO") System.currentTimeMillis() else target.resolvedTimestamp
+                )
+                repository.updateMaintenanceRequest(updated)
+                _userMessage.value = "Estado de reporte de mantenimiento actualizado a $newStatus"
+            }
+        }
+    }
+
+    fun deleteMaintenanceRequest(requestId: Long) {
+        viewModelScope.launch {
+            repository.deleteMaintenanceRequest(requestId, _activeUser.value)
+            _userMessage.value = "Reporte de mantenimiento eliminado."
         }
     }
 
