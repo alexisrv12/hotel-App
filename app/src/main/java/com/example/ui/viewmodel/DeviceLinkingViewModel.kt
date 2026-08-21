@@ -9,6 +9,9 @@ import com.example.data.entities.DeviceConnectionStatus
 import com.example.data.entities.DeviceEntity
 import com.example.data.entities.RealTimeConnectivityStatus
 import com.example.data.repository.DeviceRepository
+import com.example.data.repository.CloudSyncStatus
+import com.example.data.repository.HotelFirestoreRepository
+import com.example.data.repository.SessionDataStoreRepository
 import com.example.utils.CodeValidationResult
 import com.example.utils.DeviceCodeValidationHelper
 import com.example.utils.DeviceDataStoreManager
@@ -27,6 +30,19 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
+enum class FirebaseConnectionState {
+    CONNECTED,
+    DISCONNECTED,
+    SYNCING
+}
+
+enum class PairingStatus {
+    IDLE,
+    PAIRING,
+    SUCCESS,
+    FAILED
+}
+
 /**
  * ViewModel managing state and operations for device linking workflow and local notifications.
  */
@@ -40,6 +56,26 @@ class DeviceLinkingViewModel @JvmOverloads constructor(
     companion object {
         const val HEARTBEAT_TIMEOUT_MS = 30000L // 30s threshold for active connectivity
     }
+
+    private val hotelDao = HotelDatabase.getDatabase(application).hotelDao()
+    private val deviceDao = HotelDatabase.getDatabase(application).deviceDao()
+    private val sessionRepo = SessionDataStoreRepository(application)
+    private val firestoreRepo = HotelFirestoreRepository(application, hotelDao, deviceDao, sessionRepo)
+
+    // Real-time Firebase Connection State (Connected, Disconnected, Syncing)
+    val firebaseConnectionState: StateFlow<FirebaseConnectionState> = firestoreRepo.syncInfo
+        .map { syncInfo ->
+            when (syncInfo.status) {
+                CloudSyncStatus.ONLINE_SYNCED -> FirebaseConnectionState.CONNECTED
+                CloudSyncStatus.SYNCING -> FirebaseConnectionState.SYNCING
+                CloudSyncStatus.OFFLINE -> FirebaseConnectionState.DISCONNECTED
+            }
+        }
+        .stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.WhileSubscribed(5000),
+            initialValue = FirebaseConnectionState.CONNECTED
+        )
 
     // State Flow emitting list of linked devices from Room database
     val linkedDevices: StateFlow<List<DeviceEntity>> = repository.allDevices.stateIn(
@@ -109,11 +145,11 @@ class DeviceLinkingViewModel @JvmOverloads constructor(
     private val _qrCreationTimestamp = MutableStateFlow(System.currentTimeMillis())
     val qrCreationTimestamp: StateFlow<Long> = _qrCreationTimestamp.asStateFlow()
 
-    // Live formatted countdowns for 5-minute window
-    private val _pinCountdownText = MutableStateFlow("05:00")
+    // Live formatted countdowns for 2-minute window
+    private val _pinCountdownText = MutableStateFlow("02:00")
     val pinCountdownText: StateFlow<String> = _pinCountdownText.asStateFlow()
 
-    private val _qrCountdownText = MutableStateFlow("05:00")
+    private val _qrCountdownText = MutableStateFlow("02:00")
     val qrCountdownText: StateFlow<String> = _qrCountdownText.asStateFlow()
 
     // Decoded payload from scanned QR code string
@@ -124,11 +160,19 @@ class DeviceLinkingViewModel @JvmOverloads constructor(
     private val _pinValidationResult = MutableStateFlow<PinValidationResult?>(null)
     val pinValidationResult: StateFlow<PinValidationResult?> = _pinValidationResult.asStateFlow()
 
+    // Pairing workflow and failure states
+    private val _pairingStatus = MutableStateFlow(PairingStatus.IDLE)
+    val pairingStatus: StateFlow<PairingStatus> = _pairingStatus.asStateFlow()
+
+    private val _pairingErrorMessage = MutableStateFlow<String?>(null)
+    val pairingErrorMessage: StateFlow<String?> = _pairingErrorMessage.asStateFlow()
+
+    private val _hasPairingFailed = MutableStateFlow(false)
+    val hasPairingFailed: StateFlow<Boolean> = _hasPairingFailed.asStateFlow()
+
     // Feedback messages for UI operations
     private val _userMessage = MutableStateFlow<String?>(null)
     val userMessage: StateFlow<String?> = _userMessage.asStateFlow()
-
-    private val hotelDao = HotelDatabase.getDatabase(application).hotelDao()
 
     init {
         viewModelScope.launch {
@@ -154,6 +198,14 @@ class DeviceLinkingViewModel @JvmOverloads constructor(
             // Ticker loop updating countdown strings every second
             while (isActive) {
                 val currTime = System.currentTimeMillis()
+                val pinRemaining = codeValidator.getRemainingMillis(_pinCreationTimestamp.value, currTime)
+                if (pinRemaining <= 0L) {
+                    generateNewPin()
+                }
+                val qrRemaining = codeValidator.getRemainingMillis(_qrCreationTimestamp.value, currTime)
+                if (qrRemaining <= 0L) {
+                    generateNewQrToken()
+                }
                 _pinCountdownText.value = codeValidator.getFormattedCountdown(_pinCreationTimestamp.value, currTime)
                 _qrCountdownText.value = codeValidator.getFormattedCountdown(_qrCreationTimestamp.value, currTime)
                 delay(1000L)
@@ -197,6 +249,22 @@ class DeviceLinkingViewModel @JvmOverloads constructor(
     fun validatePin(inputPin: String, expectedPin: String = _currentPin.value): PinValidationResult {
         val result = DeviceLinkingUtils.validatePinCode(inputPin, expectedPin)
         _pinValidationResult.value = result
+        when (result) {
+            is PinValidationResult.Valid -> {
+                _pairingStatus.value = PairingStatus.SUCCESS
+                _pairingErrorMessage.value = null
+                _hasPairingFailed.value = false
+            }
+            is PinValidationResult.IncorrectPin -> {
+                recordPairingFailure("El PIN ingresado es incorrecto. Verifique el código.")
+            }
+            is PinValidationResult.InvalidFormat -> {
+                recordPairingFailure("Formato de PIN inválido. Ingrese entre 4 y 8 dígitos.")
+            }
+            is PinValidationResult.RateLimited -> {
+                recordPairingFailure("Demasiados intentos fallidos. Espere ${result.remainingSeconds} segundos.")
+            }
+        }
         return result
     }
 
@@ -206,7 +274,47 @@ class DeviceLinkingViewModel @JvmOverloads constructor(
     fun decodeQrToken(token: String): String? {
         val decoded = linkingUtility.decodeTemporarySessionQrString(token)
         _decodedQrSessionPayload.value = decoded
+        if (decoded == null) {
+            recordPairingFailure("El código QR escaneado no es válido o ha expirado.")
+        } else {
+            _pairingStatus.value = PairingStatus.SUCCESS
+            _pairingErrorMessage.value = null
+            _hasPairingFailed.value = false
+        }
         return decoded
+    }
+
+    /**
+     * Records a pairing failure state with error explanation and user notification.
+     */
+    fun recordPairingFailure(reason: String) {
+        _pairingStatus.value = PairingStatus.FAILED
+        _pairingErrorMessage.value = reason
+        _hasPairingFailed.value = true
+        _userMessage.value = reason
+    }
+
+    /**
+     * Clears failure state without regenerating tokens.
+     */
+    fun clearPairingFailure() {
+        _pairingStatus.value = PairingStatus.IDLE
+        _pairingErrorMessage.value = null
+        _hasPairingFailed.value = false
+    }
+
+    /**
+     * Retries pairing by regenerating active QR code and PIN, and restarting pairing logic smoothly.
+     */
+    fun retryPairing() {
+        _pairingStatus.value = PairingStatus.IDLE
+        _pairingErrorMessage.value = null
+        _hasPairingFailed.value = false
+        _pinValidationResult.value = null
+        _decodedQrSessionPayload.value = null
+        generateNewQrToken()
+        generateNewPin()
+        _userMessage.value = "Nuevo código QR y PIN generados. Listo para reintentar vinculación."
     }
 
     /**
@@ -374,23 +482,25 @@ class DeviceLinkingViewModel @JvmOverloads constructor(
 
         when (validationResult) {
             is CodeValidationResult.Empty -> {
-                _userMessage.value = "Ingrese el PIN de 6 dígitos."
+                recordPairingFailure("Ingrese el PIN de 6 dígitos.")
                 return false
             }
             is CodeValidationResult.InvalidFormat -> {
-                _userMessage.value = validationResult.reason
+                recordPairingFailure(validationResult.reason)
                 return false
             }
             is CodeValidationResult.Expired -> {
-                _userMessage.value = "El PIN ha expirado (válido por 5 min). Genere uno nuevo desde el panel de Gerente."
+                recordPairingFailure("El PIN ha expirado (válido por 2 min). Genere uno nuevo desde el panel de Gerente.")
                 return false
             }
             is CodeValidationResult.Incorrect -> {
-                _userMessage.value = "El PIN ingresado es incorrecto. Verifique el PIN con Gerencia."
+                recordPairingFailure("El PIN ingresado es incorrecto. Verifique el PIN con Gerencia.")
                 return false
             }
             is CodeValidationResult.Valid -> {
-                // PIN is valid
+                _pairingStatus.value = PairingStatus.SUCCESS
+                _pairingErrorMessage.value = null
+                _hasPairingFailed.value = false
             }
         }
 
@@ -429,19 +539,21 @@ class DeviceLinkingViewModel @JvmOverloads constructor(
 
         when (validationResult) {
             is CodeValidationResult.Empty -> {
-                _userMessage.value = "Ingrese o escanee un código QR."
+                recordPairingFailure("Ingrese o escanee un código QR.")
                 return false
             }
             is CodeValidationResult.Expired -> {
-                _userMessage.value = "El token QR ha expirado (válido por 5 min). Genere uno nuevo en la consola."
+                recordPairingFailure("El token QR ha expirado (válido por 2 min). Genere uno nuevo en la consola.")
                 return false
             }
             is CodeValidationResult.Incorrect, is CodeValidationResult.InvalidFormat -> {
-                _userMessage.value = "El código QR es inválido o no corresponde al hotel."
+                recordPairingFailure("El código QR es inválido o no corresponde al hotel.")
                 return false
             }
             is CodeValidationResult.Valid -> {
-                // Token is valid
+                _pairingStatus.value = PairingStatus.SUCCESS
+                _pairingErrorMessage.value = null
+                _hasPairingFailed.value = false
             }
         }
 

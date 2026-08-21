@@ -4,6 +4,8 @@ import android.Manifest
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.Color as AndroidColor
 import android.util.Log
 import android.view.ViewGroup
 import android.widget.Toast
@@ -21,6 +23,7 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -45,6 +48,9 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.CameraAlt
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.CloudDone
+import androidx.compose.material.icons.filled.CloudOff
+import androidx.compose.material.icons.filled.CloudSync
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Devices
@@ -108,6 +114,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.platform.testTag
@@ -128,6 +135,12 @@ import com.example.data.entities.DeviceConnectionStatus
 import com.example.data.entities.DeviceEntity
 import com.example.data.entities.RealTimeConnectivityStatus
 import com.example.ui.viewmodel.DeviceLinkingViewModel
+import com.example.ui.viewmodel.FirebaseConnectionState
+import com.example.ui.viewmodel.PairingStatus
+import com.google.zxing.BarcodeFormat
+import com.google.zxing.EncodeHintType
+import com.google.zxing.qrcode.QRCodeWriter
+import com.google.zxing.qrcode.decoder.ErrorCorrectionLevel
 import com.example.utils.NetworkConnectivityHelper
 import com.example.utils.PinValidationResult
 import com.google.accompanist.permissions.ExperimentalPermissionsApi
@@ -189,6 +202,11 @@ fun DeviceLinkingScreen(
     val pinValidationResult by viewModel.pinValidationResult.collectAsState()
     val userMessage by viewModel.userMessage.collectAsState()
 
+    val firebaseConnectionState by viewModel.firebaseConnectionState.collectAsState()
+    val pairingStatus by viewModel.pairingStatus.collectAsState()
+    val pairingErrorMessage by viewModel.pairingErrorMessage.collectAsState()
+    val hasPairingFailed by viewModel.hasPairingFailed.collectAsState()
+
     LaunchedEffect(isOnline) {
         if (isOnline && networkFailureMessage != null) {
             networkFailureMessage = null
@@ -202,11 +220,27 @@ fun DeviceLinkingScreen(
         }
     }
 
+    // Trigger Snackbar notification on pairing failure or invalid QR code
+    LaunchedEffect(pairingErrorMessage) {
+        pairingErrorMessage?.let { errorMsg ->
+            val snackbarResult = snackbarHostState.showSnackbar(
+                message = "Error en vinculación: $errorMsg",
+                actionLabel = "Reintentar",
+                duration = androidx.compose.material3.SnackbarDuration.Long
+            )
+            if (snackbarResult == androidx.compose.material3.SnackbarResult.ActionPerformed) {
+                viewModel.retryPairing()
+            }
+        }
+    }
+
     LaunchedEffect(scannedQrResultFromCamera) {
         scannedQrResultFromCamera?.let { token ->
-            viewModel.decodeQrToken(token)
-            selectedRole = UserRoleMode.RECEPTIONIST
-            receptionMode = ReceptionistInputMode.QR
+            val decoded = viewModel.decodeQrToken(token)
+            if (decoded != null) {
+                selectedRole = UserRoleMode.RECEPTIONIST
+                receptionMode = ReceptionistInputMode.QR
+            }
             scannedQrResultFromCamera = null
         }
     }
@@ -284,7 +318,29 @@ fun DeviceLinkingScreen(
                 .verticalScroll(rememberScrollState())
                 .background(MaterialTheme.colorScheme.surfaceContainerLowest)
         ) {
+            // Visual status indicator for network connection
             NetworkStatusIndicatorBar(isOnline = isOnline)
+
+            // Visual status indicator displaying real-time Firebase connection state (Connected, Disconnected, Syncing)
+            FirebaseRealTimeStatusIndicator(connectionState = firebaseConnectionState)
+
+            // Error handling UI component with 'Retry Pairing' button (appears only when pairing fails)
+            AnimatedVisibility(
+                visible = hasPairingFailed || pairingErrorMessage != null,
+                enter = expandVertically() + fadeIn(),
+                exit = shrinkVertically() + fadeOut()
+            ) {
+                val errorMsg = pairingErrorMessage ?: "Fallo en el intento de vinculación del dispositivo."
+                PairingFailureAlertCard(
+                    errorMessage = errorMsg,
+                    onRetryPairing = {
+                        viewModel.retryPairing()
+                    },
+                    onDismiss = {
+                        viewModel.clearPairingFailure()
+                    }
+                )
+            }
 
             AnimatedVisibility(
                 visible = networkFailureMessage != null,
@@ -437,8 +493,13 @@ fun DeviceLinkingScreen(
             onDismiss = { showCameraScannerDialog = false },
             onQrCodeDetected = { rawQrString ->
                 showCameraScannerDialog = false
-                scannedQrResultFromCamera = rawQrString
-                Toast.makeText(context, "Código QR escaneado con éxito", Toast.LENGTH_SHORT).show()
+                val decoded = viewModel.decodeQrToken(rawQrString)
+                if (decoded != null) {
+                    scannedQrResultFromCamera = rawQrString
+                    Toast.makeText(context, "Código QR escaneado con éxito", Toast.LENGTH_SHORT).show()
+                } else {
+                    viewModel.recordPairingFailure("El código QR escaneado es inválido o no corresponde a este hotel.")
+                }
             }
         )
     }
@@ -493,6 +554,197 @@ private fun NetworkStatusIndicatorBar(
                 fontWeight = FontWeight.Bold,
                 color = contentColor
             )
+        }
+    }
+}
+
+// ==========================================
+// FIREBASE REAL-TIME CONNECTION STATUS INDICATOR
+// ==========================================
+private data class FirebaseStatusVisuals(
+    val bgColor: Color,
+    val contentColor: Color,
+    val dotColor: Color,
+    val icon: androidx.compose.ui.graphics.vector.ImageVector,
+    val title: String,
+    val subtitle: String
+)
+
+@Composable
+private fun FirebaseRealTimeStatusIndicator(
+    connectionState: FirebaseConnectionState,
+    modifier: Modifier = Modifier
+) {
+    val visuals = when (connectionState) {
+        FirebaseConnectionState.CONNECTED -> FirebaseStatusVisuals(
+            bgColor = Color(0xFFE8F5E9),
+            contentColor = Color(0xFF2E7D32),
+            dotColor = Color(0xFF4CAF50),
+            icon = Icons.Default.CloudDone,
+            title = "Firebase: Conectado",
+            subtitle = "Sincronización en la nube activa (Tiempo Real)"
+        )
+        FirebaseConnectionState.SYNCING -> FirebaseStatusVisuals(
+            bgColor = Color(0xFFE1F5FE),
+            contentColor = Color(0xFF0277BD),
+            dotColor = Color(0xFF03A9F4),
+            icon = Icons.Default.CloudSync,
+            title = "Firebase: Sincronizando...",
+            subtitle = "Actualizando datos con la base de datos en la nube"
+        )
+        FirebaseConnectionState.DISCONNECTED -> FirebaseStatusVisuals(
+            bgColor = Color(0xFFFFEBEE),
+            contentColor = Color(0xFFC62828),
+            dotColor = Color(0xFFE53935),
+            icon = Icons.Default.CloudOff,
+            title = "Firebase: Desconectado",
+            subtitle = "Modo local / Sin conexión a Firestore"
+        )
+    }
+
+    Surface(
+        color = visuals.bgColor,
+        modifier = modifier
+            .fillMaxWidth()
+            .testTag("firebase_realtime_status_indicator")
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(10.dp)
+                        .clip(CircleShape)
+                        .background(visuals.dotColor)
+                )
+
+                Icon(
+                    imageVector = visuals.icon,
+                    contentDescription = null,
+                    tint = visuals.contentColor,
+                    modifier = Modifier.size(16.dp)
+                )
+
+                Text(
+                    text = visuals.title,
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = visuals.contentColor
+                )
+            }
+
+            Text(
+                text = visuals.subtitle,
+                style = MaterialTheme.typography.labelSmall,
+                color = visuals.contentColor.copy(alpha = 0.85f)
+            )
+        }
+    }
+}
+
+// ==========================================
+// PAIRING FAILURE ALERT CARD (WITH RETRY BUTTON)
+// ==========================================
+@Composable
+private fun PairingFailureAlertCard(
+    errorMessage: String,
+    onRetryPairing: () -> Unit,
+    onDismiss: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Surface(
+        color = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.9f),
+        shape = RoundedCornerShape(12.dp),
+        border = androidx.compose.foundation.BorderStroke(1.5.dp, MaterialTheme.colorScheme.error),
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 8.dp)
+            .testTag("pairing_failure_alert_card")
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(14.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.ErrorOutline,
+                        contentDescription = "Error de Vinculación",
+                        tint = MaterialTheme.colorScheme.error,
+                        modifier = Modifier.size(24.dp)
+                    )
+                    Text(
+                        text = "Fallo en la Vinculación",
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onErrorContainer
+                    )
+                }
+
+                IconButton(
+                    onClick = onDismiss,
+                    modifier = Modifier.size(28.dp).testTag("dismiss_pairing_error_button")
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Close,
+                        contentDescription = "Cerrar",
+                        tint = MaterialTheme.colorScheme.onErrorContainer,
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
+            }
+
+            Text(
+                text = errorMessage,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onErrorContainer
+            )
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.End,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Button(
+                    onClick = onRetryPairing,
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.error,
+                        contentColor = MaterialTheme.colorScheme.onError
+                    ),
+                    shape = RoundedCornerShape(8.dp),
+                    modifier = Modifier.testTag("retry_pairing_button")
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Refresh,
+                        contentDescription = null,
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(
+                        text = "Reintentar Vinculación",
+                        fontWeight = FontWeight.Bold,
+                        style = MaterialTheme.typography.labelLarge
+                    )
+                }
+            }
         }
     }
 }
@@ -1209,7 +1461,7 @@ private fun QrDisplayCard(
                     .padding(8.dp)
             ) {
                 Box(contentAlignment = Alignment.Center) {
-                    SimulatedQrCanvas(token = qrSessionToken)
+                    RealQrCodeImage(token = qrSessionToken)
                 }
             }
 
@@ -1508,29 +1760,65 @@ private fun DeviceItemRow(
 }
 
 // ==========================================
-// SIMULATED QR CANVAS
+// REAL QR CODE GENERATOR (ZXING)
 // ==========================================
 @Composable
-private fun SimulatedQrCanvas(token: String, modifier: Modifier = Modifier) {
-    Canvas(modifier = modifier.size(160.dp)) {
-        val hash = abs(token.hashCode())
-        val gridSize = 10
-        val cellSize = size.width / gridSize
-
-        for (i in 0 until gridSize) {
-            for (j in 0 until gridSize) {
-                val shouldDraw = ((hash + i * 7 + j * 13) % 2 == 0) ||
-                        (i in 0..2 && j in 0..2) ||
-                        (i in 7..9 && j in 0..2) ||
-                        (i in 0..2 && j in 7..9)
-                if (shouldDraw) {
-                    drawRect(
-                        color = Color.Black,
-                        topLeft = Offset(i * cellSize, j * cellSize),
-                        size = Size(cellSize, cellSize)
-                    )
+private fun RealQrCodeImage(
+    token: String,
+    modifier: Modifier = Modifier,
+    sizePx: Int = 512
+) {
+    val qrBitmap = remember(token) {
+        if (token.isBlank()) null
+        else {
+            try {
+                val hints = mapOf(
+                    EncodeHintType.CHARACTER_SET to "UTF-8",
+                    EncodeHintType.MARGIN to 1,
+                    EncodeHintType.ERROR_CORRECTION to ErrorCorrectionLevel.M
+                )
+                val bitMatrix = QRCodeWriter().encode(
+                    token,
+                    BarcodeFormat.QR_CODE,
+                    sizePx,
+                    sizePx,
+                    hints
+                )
+                val width = bitMatrix.width
+                val height = bitMatrix.height
+                val pixels = IntArray(width * height)
+                for (y in 0 until height) {
+                    val offset = y * width
+                    for (x in 0 until width) {
+                        pixels[offset + x] = if (bitMatrix.get(x, y)) AndroidColor.BLACK else AndroidColor.WHITE
+                    }
                 }
+                val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+                bitmap.setPixels(pixels, 0, width, 0, 0, width, height)
+                bitmap
+            } catch (e: Exception) {
+                null
             }
+        }
+    }
+
+    if (qrBitmap != null) {
+        Image(
+            bitmap = qrBitmap.asImageBitmap(),
+            contentDescription = "Código QR de Vinculación",
+            modifier = modifier.size(160.dp)
+        )
+    } else {
+        Box(
+            modifier = modifier.size(160.dp),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(
+                imageVector = Icons.Default.QrCode,
+                contentDescription = null,
+                modifier = Modifier.size(64.dp),
+                tint = MaterialTheme.colorScheme.onSurfaceVariant
+            )
         }
     }
 }
@@ -1956,7 +2244,7 @@ private fun NetworkConfirmationDialog(
 
                 Text(
                     text = if (isOnline) {
-                        "¿Desea generar un nuevo código ${if (isQr) "QR" else "PIN"} de vinculación? El código anterior quedará invalidado y el nuevo tendrá 5 minutos de vigencia."
+                        "¿Desea generar un nuevo código ${if (isQr) "QR" else "PIN"} de vinculación? El código anterior quedará invalidado y el nuevo tendrá 2 minutos de vigencia."
                     } else {
                         "Atención: Se detectó señal de red inestable o desconectada. Generar un código en este estado podría impedir que las terminales lo validen hasta reconectarse."
                     },

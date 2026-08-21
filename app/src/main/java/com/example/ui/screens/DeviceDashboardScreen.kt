@@ -36,7 +36,6 @@ import androidx.compose.material.icons.filled.NotificationsActive
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Sync
-import com.example.ui.screens.SharedMirrorDashboardScreen
 import androidx.compose.material.icons.filled.Smartphone
 import androidx.compose.material.icons.filled.Wifi
 import androidx.compose.material.icons.filled.WifiOff
@@ -294,21 +293,6 @@ fun DeviceDashboardScreen(
                     },
                     modifier = Modifier.testTag("dashboard_tab_requests")
                 )
-
-                Tab(
-                    selected = selectedTabIndex == 3,
-                    onClick = { selectedTabIndex = 3 },
-                    text = {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(6.dp)
-                        ) {
-                            Icon(imageVector = Icons.Default.Sync, contentDescription = null, modifier = Modifier.size(18.dp))
-                            Text("Espejo Sync", fontWeight = FontWeight.Bold)
-                        }
-                    },
-                    modifier = Modifier.testTag("dashboard_tab_mirror_sync")
-                )
             }
 
             // Tab Content
@@ -342,13 +326,6 @@ fun DeviceDashboardScreen(
                             onApprove = { device -> viewModel.approveDeviceRequest(device) },
                             onReject = { device -> viewModel.rejectDeviceRequest(device) },
                             onNotify = { device -> viewModel.sendLocalNotificationForDevice(context, device) }
-                        )
-                    }
-
-                    3 -> {
-                        // Real-time Mirror Synchronization Dashboard & Sync Health
-                        SharedMirrorDashboardScreen(
-                            onNavigateBack = { selectedTabIndex = 0 }
                         )
                     }
                 }

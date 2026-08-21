@@ -69,10 +69,10 @@ class LinkingViewModel(application: Application) : AndroidViewModel(application)
     private val _qrTimestamp = MutableStateFlow(System.currentTimeMillis())
 
     // Live Countdowns
-    private val _pinCountdown = MutableStateFlow("05:00")
+    private val _pinCountdown = MutableStateFlow("02:00")
     val pinCountdown: StateFlow<String> = _pinCountdown.asStateFlow()
 
-    private val _qrCountdown = MutableStateFlow("05:00")
+    private val _qrCountdown = MutableStateFlow("02:00")
     val qrCountdown: StateFlow<String> = _qrCountdown.asStateFlow()
 
     // Navigation events for safe transition
@@ -84,7 +84,7 @@ class LinkingViewModel(application: Application) : AndroidViewModel(application)
         viewModelScope.launch {
             val (savedPin, pinTs) = sessionRepo.getActivePin()
             val now = System.currentTimeMillis()
-            if (!savedPin.isNullOrBlank() && pinTs > 0 && (now - pinTs < 300_000L)) {
+            if (!savedPin.isNullOrBlank() && pinTs > 0 && (now - pinTs < 120_000L)) {
                 _activeManagerPin.value = savedPin
                 _pinTimestamp.value = pinTs
             } else {
@@ -92,7 +92,7 @@ class LinkingViewModel(application: Application) : AndroidViewModel(application)
             }
 
             val (savedQr, qrTs) = sessionRepo.getActiveQrToken()
-            if (!savedQr.isNullOrBlank() && qrTs > 0 && (now - qrTs < 300_000L)) {
+            if (!savedQr.isNullOrBlank() && qrTs > 0 && (now - qrTs < 120_000L)) {
                 _activeManagerQr.value = savedQr
                 _qrTimestamp.value = qrTs
             } else {
@@ -102,6 +102,12 @@ class LinkingViewModel(application: Application) : AndroidViewModel(application)
             // Ticker loop
             while (isActive) {
                 val current = System.currentTimeMillis()
+                if (current - _pinTimestamp.value >= 120_000L) {
+                    refreshActivePin()
+                }
+                if (current - _qrTimestamp.value >= 120_000L) {
+                    refreshActiveQr()
+                }
                 _pinCountdown.value = codeValidator.getFormattedCountdown(_pinTimestamp.value, current)
                 _qrCountdown.value = codeValidator.getFormattedCountdown(_qrTimestamp.value, current)
                 delay(1000L)
@@ -161,7 +167,7 @@ class LinkingViewModel(application: Application) : AndroidViewModel(application)
         }
 
         val now = System.currentTimeMillis()
-        val isPinValid = enteredPin == _activeManagerPin.value && (now - _pinTimestamp.value <= 300_000L)
+        val isPinValid = enteredPin == _activeManagerPin.value && (now - _pinTimestamp.value <= 120_000L)
 
         if (!isPinValid) {
             _uiState.value = LinkingUiState.Error("PIN no válido o ha expirado. Solicite un nuevo PIN en Gerencia.")
@@ -196,7 +202,7 @@ class LinkingViewModel(application: Application) : AndroidViewModel(application)
                 scannedData.rawContent.contains(_activeManagerQr.value) ||
                 scannedData.token.startsWith("RIVERA-LINK-")
 
-        val isExpired = now - _qrTimestamp.value > 300_000L
+        val isExpired = now - _qrTimestamp.value > 120_000L
 
         if (isExpired && !scannedData.token.startsWith("RIVERA-LINK-")) {
             _uiState.value = LinkingUiState.Error("El código QR ha expirado. Genere uno nuevo.")

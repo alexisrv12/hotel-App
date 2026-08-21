@@ -523,6 +523,7 @@ private fun DeviceLinkingOptionsDialog(
                                 QRScannerView(
                                     modifier = Modifier.fillMaxSize(),
                                     onQrCodeScanned = { scannedText ->
+                                        isCameraActive = false
                                         qrInput = scannedText
                                         errorMessage = null
                                         val success = deviceLinkingViewModel.completeLinkingWithQr(context, scannedText)
