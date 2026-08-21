@@ -59,6 +59,7 @@ import androidx.compose.material.icons.filled.FlashlightOff
 import androidx.compose.material.icons.filled.FlashlightOn
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Key
+import androidx.compose.material.icons.filled.Lan
 import androidx.compose.material.icons.filled.Link
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.NetworkCheck
@@ -66,6 +67,7 @@ import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.QrCode
 import androidx.compose.material.icons.filled.QrCodeScanner
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Router
 import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.Smartphone
 import androidx.compose.material.icons.filled.SwapHoriz
@@ -78,6 +80,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Divider
 import androidx.compose.material3.ElevatedCard
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -86,6 +89,10 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import com.example.utils.DiscoveredLanDevice
+import com.example.utils.WifiIpInfo
+import com.example.ui.theme.HotelNavy
+import com.example.ui.theme.HotelGold
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SegmentedButton
 import androidx.compose.material3.SegmentedButtonDefaults
@@ -162,11 +169,11 @@ enum class UserRoleMode {
 }
 
 enum class ManagerLinkingMode {
-    QR, PIN
+    QR, PIN, IP_NETWORK
 }
 
 enum class ReceptionistInputMode {
-    PIN, QR
+    PIN, QR, IP_NETWORK
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -206,6 +213,12 @@ fun DeviceLinkingScreen(
     val pairingStatus by viewModel.pairingStatus.collectAsState()
     val pairingErrorMessage by viewModel.pairingErrorMessage.collectAsState()
     val hasPairingFailed by viewModel.hasPairingFailed.collectAsState()
+
+    val wifiIpInfo by viewModel.wifiIpInfo.collectAsState()
+    val discoveredLanDevices by viewModel.discoveredLanDevices.collectAsState()
+    val isScanningLan by viewModel.isScanningLan.collectAsState()
+    val ipPingResult by viewModel.ipPingResult.collectAsState()
+    val isConnectingIp by viewModel.isConnectingIp.collectAsState()
 
     LaunchedEffect(isOnline) {
         if (isOnline && networkFailureMessage != null) {
@@ -421,20 +434,20 @@ fun DeviceLinkingScreen(
                     ManagerInterfaceContent(
                         managerMode = managerMode,
                         onManagerModeChange = { newMode ->
-                            if (NetworkConnectivityHelper.isNetworkAvailable(context)) {
-                                managerMode = newMode
-                                networkFailureMessage = null
-                            } else {
-                                networkFailureMessage = "Se requiere conexión a Internet para cambiar el modo de vinculación."
-                                pendingGenerationAction = { managerMode = newMode }
-                                Toast.makeText(context, "Se requiere conexión a Internet.", Toast.LENGTH_LONG).show()
-                            }
+                            managerMode = newMode
+                            networkFailureMessage = null
                         },
                         currentPin = currentPin,
                         currentQrSessionToken = currentQrSessionToken,
                         pinCountdownText = pinCountdownText,
                         qrCountdownText = qrCountdownText,
                         linkedDevices = linkedDevices,
+                        wifiIpInfo = wifiIpInfo,
+                        discoveredLanDevices = discoveredLanDevices,
+                        isScanningLan = isScanningLan,
+                        ipPingResult = ipPingResult,
+                        onScanLan = { viewModel.scanLocalNetwork() },
+                        onPingIp = { ip -> viewModel.pingLanIp(ip) },
                         onGenerateNewPin = {
                             if (NetworkConnectivityHelper.isNetworkAvailable(context)) {
                                 viewModel.generateNewPin()
@@ -473,6 +486,22 @@ fun DeviceLinkingScreen(
                         pinValidationResult = pinValidationResult,
                         decodedQrPayload = decodedQrPayload,
                         linkedDevices = linkedDevices,
+                        wifiIpInfo = wifiIpInfo,
+                        discoveredLanDevices = discoveredLanDevices,
+                        isScanningLan = isScanningLan,
+                        isConnectingIp = isConnectingIp,
+                        ipPingResult = ipPingResult,
+                        onScanLan = { viewModel.scanLocalNetwork() },
+                        onPingIp = { ip -> viewModel.pingLanIp(ip) },
+                        onConnectViaIp = { ip, port, name, role ->
+                            viewModel.connectViaLanIp(
+                                targetIp = ip,
+                                port = port,
+                                deviceName = name,
+                                role = role,
+                                context = context
+                            )
+                        },
                         onValidatePin = { viewModel.validatePin(it) },
                         onDecodeQrToken = { viewModel.decodeQrToken(it) },
                         onLinkDevice = { name, userAssigned, deviceId ->
@@ -856,6 +885,12 @@ private fun ManagerInterfaceContent(
     pinCountdownText: String = "05:00",
     qrCountdownText: String = "05:00",
     linkedDevices: List<DeviceEntity>,
+    wifiIpInfo: WifiIpInfo,
+    discoveredLanDevices: List<DiscoveredLanDevice>,
+    isScanningLan: Boolean,
+    ipPingResult: String?,
+    onScanLan: () -> Unit,
+    onPingIp: (String) -> Unit,
     onGenerateNewPin: () -> Unit,
     onGenerateNewQr: () -> Unit,
     onUnlinkDevice: (DeviceEntity) -> Unit,
@@ -893,12 +928,12 @@ private fun ManagerInterfaceContent(
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
                 Text(
-                    text = "Generación de Código de Vinculación",
+                    text = "Método de Vinculación y Red",
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.Bold
                 )
                 Text(
-                    text = "Seleccione el método que proporcionará al personal de recepción para autorizar su dispositivo.",
+                    text = "Seleccione cómo autorizar terminales: Código QR temporal, PIN seguro o Conexión directa por Wi-Fi / IP Local.",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -909,38 +944,57 @@ private fun ManagerInterfaceContent(
                     SegmentedButton(
                         selected = managerMode == ManagerLinkingMode.QR,
                         onClick = { onManagerModeChange(ManagerLinkingMode.QR) },
-                        shape = SegmentedButtonDefaults.itemShape(index = 0, count = 2),
+                        shape = SegmentedButtonDefaults.itemShape(index = 0, count = 3),
                         modifier = Modifier.testTag("qr_option_button")
                     ) {
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            horizontalArrangement = Arrangement.spacedBy(4.dp)
                         ) {
                             Icon(
                                 imageVector = Icons.Default.QrCode,
                                 contentDescription = null,
-                                modifier = Modifier.size(18.dp)
+                                modifier = Modifier.size(16.dp)
                             )
-                            Text("Código QR Temporal")
+                            Text("Código QR")
                         }
                     }
 
                     SegmentedButton(
                         selected = managerMode == ManagerLinkingMode.PIN,
                         onClick = { onManagerModeChange(ManagerLinkingMode.PIN) },
-                        shape = SegmentedButtonDefaults.itemShape(index = 1, count = 2),
+                        shape = SegmentedButtonDefaults.itemShape(index = 1, count = 3),
                         modifier = Modifier.testTag("pin_option_button")
                     ) {
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            horizontalArrangement = Arrangement.spacedBy(4.dp)
                         ) {
                             Icon(
                                 imageVector = Icons.Default.Key,
                                 contentDescription = null,
-                                modifier = Modifier.size(18.dp)
+                                modifier = Modifier.size(16.dp)
                             )
                             Text("PIN Seguro")
+                        }
+                    }
+
+                    SegmentedButton(
+                        selected = managerMode == ManagerLinkingMode.IP_NETWORK,
+                        onClick = { onManagerModeChange(ManagerLinkingMode.IP_NETWORK) },
+                        shape = SegmentedButtonDefaults.itemShape(index = 2, count = 3),
+                        modifier = Modifier.testTag("ip_option_button")
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Wifi,
+                                contentDescription = null,
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Text("Wi-Fi / IP")
                         }
                     }
                 }
@@ -972,6 +1026,20 @@ private fun ManagerInterfaceContent(
                         val clip = ClipData.newPlainText("PIN Vinculación", currentPin)
                         clipboard.setPrimaryClip(clip)
                         Toast.makeText(context, "PIN copiado al portapapeles", Toast.LENGTH_SHORT).show()
+                    }
+                )
+            }
+
+            ManagerLinkingMode.IP_NETWORK -> {
+                ManagerIpNetworkCard(
+                    wifiIpInfo = wifiIpInfo,
+                    discoveredDevices = discoveredLanDevices,
+                    isScanning = isScanningLan,
+                    ipPingResult = ipPingResult,
+                    onScanLan = onScanLan,
+                    onPingIp = onPingIp,
+                    onLinkDiscoveredDevice = { dev ->
+                        onManualLinkDevice(dev.deviceName, dev.role)
                     }
                 )
             }
@@ -1034,6 +1102,14 @@ private fun ReceptionistInterfaceContent(
     pinValidationResult: PinValidationResult?,
     decodedQrPayload: String?,
     linkedDevices: List<DeviceEntity>,
+    wifiIpInfo: WifiIpInfo,
+    discoveredLanDevices: List<DiscoveredLanDevice>,
+    isScanningLan: Boolean,
+    isConnectingIp: Boolean,
+    ipPingResult: String?,
+    onScanLan: () -> Unit,
+    onPingIp: (String) -> Unit,
+    onConnectViaIp: (String, Int, String, String) -> Unit,
     onValidatePin: (String) -> Unit,
     onDecodeQrToken: (String) -> Unit,
     onLinkDevice: (String, String, String?) -> Unit,
@@ -1066,7 +1142,7 @@ private fun ReceptionistInterfaceContent(
                     fontWeight = FontWeight.Bold
                 )
                 Text(
-                    text = "Ingrese el PIN proporcionado por el Gerente o escanee el Código QR generado en la pantalla principal.",
+                    text = "Seleccione cómo vincular: Código PIN, Escaneo QR o Conexión automática por Wi-Fi / IP Local.",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -1080,19 +1156,19 @@ private fun ReceptionistInterfaceContent(
                             onReceptionModeChange(ReceptionistInputMode.PIN)
                             onClearValidationResult()
                         },
-                        shape = SegmentedButtonDefaults.itemShape(index = 0, count = 2),
+                        shape = SegmentedButtonDefaults.itemShape(index = 0, count = 3),
                         modifier = Modifier.testTag("reception_pin_option_button")
                     ) {
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            horizontalArrangement = Arrangement.spacedBy(4.dp)
                         ) {
                             Icon(
                                 imageVector = Icons.Default.Key,
                                 contentDescription = null,
-                                modifier = Modifier.size(18.dp)
+                                modifier = Modifier.size(16.dp)
                             )
-                            Text("Validar por PIN")
+                            Text("PIN")
                         }
                     }
 
@@ -1102,19 +1178,41 @@ private fun ReceptionistInterfaceContent(
                             onReceptionModeChange(ReceptionistInputMode.QR)
                             onClearValidationResult()
                         },
-                        shape = SegmentedButtonDefaults.itemShape(index = 1, count = 2),
+                        shape = SegmentedButtonDefaults.itemShape(index = 1, count = 3),
                         modifier = Modifier.testTag("reception_qr_option_button")
                     ) {
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            horizontalArrangement = Arrangement.spacedBy(4.dp)
                         ) {
                             Icon(
                                 imageVector = Icons.Default.QrCodeScanner,
                                 contentDescription = null,
-                                modifier = Modifier.size(18.dp)
+                                modifier = Modifier.size(16.dp)
                             )
-                            Text("Escanear QR")
+                            Text("QR")
+                        }
+                    }
+
+                    SegmentedButton(
+                        selected = receptionMode == ReceptionistInputMode.IP_NETWORK,
+                        onClick = {
+                            onReceptionModeChange(ReceptionistInputMode.IP_NETWORK)
+                            onClearValidationResult()
+                        },
+                        shape = SegmentedButtonDefaults.itemShape(index = 2, count = 3),
+                        modifier = Modifier.testTag("reception_ip_option_button")
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Wifi,
+                                contentDescription = null,
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Text("Wi-Fi / IP")
                         }
                     }
                 }
@@ -1374,6 +1472,475 @@ private fun ReceptionistInterfaceContent(
                             }
                         }
                     }
+                }
+            }
+
+            ReceptionistInputMode.IP_NETWORK -> {
+                ReceptionistIpConnectCard(
+                    wifiIpInfo = wifiIpInfo,
+                    discoveredDevices = discoveredLanDevices,
+                    isScanning = isScanningLan,
+                    isConnecting = isConnectingIp,
+                    ipPingResult = ipPingResult,
+                    onScanLan = onScanLan,
+                    onPingIp = onPingIp,
+                    onConnectIp = onConnectViaIp
+                )
+            }
+        }
+    }
+}
+
+// ==========================================
+// MANAGER IP & WI-FI NETWORK CARD
+// ==========================================
+@Composable
+private fun ManagerIpNetworkCard(
+    wifiIpInfo: WifiIpInfo,
+    discoveredDevices: List<DiscoveredLanDevice>,
+    isScanning: Boolean,
+    ipPingResult: String?,
+    onScanLan: () -> Unit,
+    onPingIp: (String) -> Unit,
+    onLinkDiscoveredDevice: (DiscoveredLanDevice) -> Unit
+) {
+    val context = LocalContext.current
+    val defaultIp = remember(wifiIpInfo.localIpAddress) {
+        if (wifiIpInfo.localIpAddress.contains(".")) {
+            wifiIpInfo.localIpAddress.substringBeforeLast(".") + "."
+        } else {
+            "192.168.1."
+        }
+    }
+    var manualTestIp by remember(defaultIp) { mutableStateOf(defaultIp) }
+
+    ElevatedCard(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.elevatedCardColors(
+            containerColor = MaterialTheme.colorScheme.surface
+        )
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Router,
+                        contentDescription = null,
+                        tint = HotelNavy,
+                        modifier = Modifier.size(24.dp)
+                    )
+                    Text(
+                        text = "Servidor Wi-Fi / Red Local (IP)",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+
+                Surface(
+                    color = Color(0xFFE8F5E9),
+                    shape = RoundedCornerShape(12.dp)
+                ) {
+                    Text(
+                        text = "TCP Activo :${wifiIpInfo.serverPort}",
+                        color = Color(0xFF2E7D32),
+                        fontWeight = FontWeight.Bold,
+                        style = MaterialTheme.typography.labelSmall,
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                    )
+                }
+            }
+
+            // Network Information Box
+            Surface(
+                color = HotelNavy.copy(alpha = 0.05f),
+                shape = RoundedCornerShape(12.dp),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(
+                    modifier = Modifier.padding(14.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text("Red Wi-Fi:", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text(wifiIpInfo.wifiSsid, style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Bold)
+                    }
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text("IP de este Terminal (Host):", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text("${wifiIpInfo.localIpAddress}:${wifiIpInfo.serverPort}", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.ExtraBold, color = HotelNavy)
+                    }
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.End
+                    ) {
+                        TextButton(
+                            onClick = {
+                                val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                                val clip = ClipData.newPlainText("Dirección IP Host", "${wifiIpInfo.localIpAddress}:${wifiIpInfo.serverPort}")
+                                clipboard.setPrimaryClip(clip)
+                                Toast.makeText(context, "IP ${wifiIpInfo.localIpAddress}:${wifiIpInfo.serverPort} copiada", Toast.LENGTH_SHORT).show()
+                            }
+                        ) {
+                            Icon(Icons.Default.Link, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text("Copiar IP Host")
+                        }
+                    }
+                }
+            }
+
+            Text(
+                text = "Las terminales de recepción conectadas a la misma red Wi-Fi pueden emparejarse ingresando esta dirección IP.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+
+            // LAN Scan Action
+            Button(
+                onClick = onScanLan,
+                enabled = !isScanning,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(48.dp),
+                shape = RoundedCornerShape(10.dp),
+                colors = ButtonDefaults.buttonColors(containerColor = HotelNavy)
+            ) {
+                if (isScanning) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(20.dp),
+                        color = Color.White,
+                        strokeWidth = 2.dp
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Escaneando subred Wi-Fi...")
+                } else {
+                    Icon(Icons.Default.Lan, contentDescription = null)
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Escanear Dispositivos en la Red Local")
+                }
+            }
+
+            // Discovered devices list
+            if (discoveredDevices.isNotEmpty()) {
+                Text(
+                    text = "Dispositivos Detectados (${discoveredDevices.size}):",
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.Bold
+                )
+
+                discoveredDevices.forEach { dev ->
+                    Surface(
+                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                        shape = RoundedCornerShape(10.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(12.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Column {
+                                Text(dev.deviceName, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.bodyMedium)
+                                Text("${dev.ipAddress}:${dev.port} • ${dev.role}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+
+                            Button(
+                                onClick = { onLinkDiscoveredDevice(dev) },
+                                shape = RoundedCornerShape(8.dp),
+                                colors = ButtonDefaults.buttonColors(containerColor = HotelGold)
+                            ) {
+                                Text("Vincular", color = HotelNavy, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.labelMedium)
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Manual IP Ping Tool
+            Divider(modifier = Modifier.padding(vertical = 4.dp))
+            Text(
+                text = "Diagnóstico de Conectividad IP:",
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.Bold
+            )
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                OutlinedTextField(
+                    value = manualTestIp,
+                    onValueChange = { manualTestIp = it },
+                    label = { Text("IP de Terminal") },
+                    singleLine = true,
+                    modifier = Modifier.weight(1f)
+                )
+
+                Button(
+                    onClick = { onPingIp(manualTestIp) },
+                    shape = RoundedCornerShape(10.dp),
+                    modifier = Modifier.height(56.dp)
+                ) {
+                    Text("Ping")
+                }
+            }
+
+            ipPingResult?.let { result ->
+                Surface(
+                    color = if (result.contains("ms")) Color(0xFFE8F5E9) else Color(0xFFFFEBEE),
+                    shape = RoundedCornerShape(8.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(
+                        text = result,
+                        modifier = Modifier.padding(10.dp),
+                        style = MaterialTheme.typography.bodySmall,
+                        fontWeight = FontWeight.Bold,
+                        color = if (result.contains("ms")) Color(0xFF2E7D32) else Color(0xFFC62828)
+                    )
+                }
+            }
+        }
+    }
+}
+
+// ==========================================
+// RECEPTIONIST IP CONNECT CARD
+// ==========================================
+@Composable
+private fun ReceptionistIpConnectCard(
+    wifiIpInfo: WifiIpInfo,
+    discoveredDevices: List<DiscoveredLanDevice>,
+    isScanning: Boolean,
+    isConnecting: Boolean,
+    ipPingResult: String?,
+    onScanLan: () -> Unit,
+    onPingIp: (String) -> Unit,
+    onConnectIp: (String, Int, String, String) -> Unit
+) {
+    val defaultIp = remember(wifiIpInfo.localIpAddress) {
+        if (wifiIpInfo.localIpAddress.contains(".")) {
+            wifiIpInfo.localIpAddress.substringBeforeLast(".") + "."
+        } else {
+            "192.168.1."
+        }
+    }
+    var hostIpInput by remember(defaultIp) { mutableStateOf(defaultIp) }
+    var portInput by remember { mutableStateOf("8888") }
+    var terminalNameInput by remember { mutableStateOf("Terminal Recepción 01") }
+
+    ElevatedCard(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.elevatedCardColors(
+            containerColor = MaterialTheme.colorScheme.surface
+        )
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp)
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Wifi,
+                    contentDescription = null,
+                    tint = HotelNavy,
+                    modifier = Modifier.size(24.dp)
+                )
+                Text(
+                    text = "Conectar por Wi-Fi / IP Local",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+
+            Surface(
+                color = HotelNavy.copy(alpha = 0.05f),
+                shape = RoundedCornerShape(10.dp),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(12.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column {
+                        Text("Mi Red Wi-Fi:", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text(wifiIpInfo.wifiSsid, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.bodySmall)
+                    }
+                    Column(horizontalAlignment = Alignment.End) {
+                        Text("Mi IP Local:", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text(wifiIpInfo.localIpAddress, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.bodySmall, color = HotelNavy)
+                    }
+                }
+            }
+
+            // Quick Auto-Discover Action
+            OutlinedButton(
+                onClick = onScanLan,
+                enabled = !isScanning,
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(10.dp)
+            ) {
+                if (isScanning) {
+                    CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Buscando Servidor en la Red...")
+                } else {
+                    Icon(Icons.Default.Lan, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Auto-Detectar Servidor de Gerencia")
+                }
+            }
+
+            // Auto-detected servers
+            if (discoveredDevices.isNotEmpty()) {
+                Text(
+                    text = "Servidores Encontrados (Toca para autocompletar):",
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.Bold
+                )
+
+                discoveredDevices.forEach { dev ->
+                    Surface(
+                        color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.4f),
+                        shape = RoundedCornerShape(8.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(10.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Column {
+                                Text(dev.deviceName, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.bodySmall)
+                                Text("${dev.ipAddress}:${dev.port}", style = MaterialTheme.typography.labelSmall)
+                            }
+                            TextButton(
+                                onClick = {
+                                    hostIpInput = dev.ipAddress
+                                    portInput = dev.port.toString()
+                                }
+                            ) {
+                                Text("Usar IP")
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Input Fields
+            OutlinedTextField(
+                value = hostIpInput,
+                onValueChange = { hostIpInput = it },
+                label = { Text("Dirección IP del Servidor Gerencia") },
+                placeholder = { Text("Ej: 192.168.1.100") },
+                leadingIcon = { Icon(Icons.Default.Router, contentDescription = null) },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth()
+            )
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                OutlinedTextField(
+                    value = portInput,
+                    onValueChange = { portInput = it },
+                    label = { Text("Puerto") },
+                    placeholder = { Text("8888") },
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    singleLine = true,
+                    modifier = Modifier.weight(1f)
+                )
+
+                OutlinedButton(
+                    onClick = { onPingIp(hostIpInput) },
+                    modifier = Modifier
+                        .height(56.dp)
+                        .weight(1f),
+                    shape = RoundedCornerShape(8.dp)
+                ) {
+                    Icon(Icons.Default.NetworkCheck, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text("Test Ping")
+                }
+            }
+
+            ipPingResult?.let { result ->
+                Surface(
+                    color = if (result.contains("ms")) Color(0xFFE8F5E9) else Color(0xFFFFEBEE),
+                    shape = RoundedCornerShape(8.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(
+                        text = result,
+                        modifier = Modifier.padding(8.dp),
+                        style = MaterialTheme.typography.bodySmall,
+                        fontWeight = FontWeight.Bold,
+                        color = if (result.contains("ms")) Color(0xFF2E7D32) else Color(0xFFC62828)
+                    )
+                }
+            }
+
+            OutlinedTextField(
+                value = terminalNameInput,
+                onValueChange = { terminalNameInput = it },
+                label = { Text("Nombre de esta Terminal") },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth()
+            )
+
+            Button(
+                onClick = {
+                    val port = portInput.toIntOrNull() ?: 8888
+                    onConnectIp(hostIpInput.trim(), port, terminalNameInput.trim(), "RECEPCION")
+                },
+                enabled = !isConnecting && hostIpInput.isNotBlank(),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(50.dp),
+                shape = RoundedCornerShape(10.dp),
+                colors = ButtonDefaults.buttonColors(containerColor = HotelNavy)
+            ) {
+                if (isConnecting) {
+                    CircularProgressIndicator(modifier = Modifier.size(22.dp), color = Color.White, strokeWidth = 2.dp)
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Conectando y Vinculando vía Wi-Fi...", fontWeight = FontWeight.Bold)
+                } else {
+                    Icon(Icons.Default.Link, contentDescription = null)
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Conectar y Vincular por Red Wi-Fi", fontWeight = FontWeight.Bold)
                 }
             }
         }

@@ -14,6 +14,9 @@ import com.example.ui.Screen
 import com.example.utils.DeviceCodeValidationHelper
 import com.example.utils.DeviceDataStoreManager
 import com.example.utils.DevicePreferences
+import com.example.utils.LocalNetworkManager
+import com.example.utils.WifiIpInfo
+import com.example.utils.DiscoveredLanDevice
 import com.example.utils.QrScannerManager
 import com.example.utils.ScannedQrData
 import kotlinx.coroutines.delay
@@ -74,6 +77,11 @@ class LinkingViewModel(application: Application) : AndroidViewModel(application)
 
     private val _qrCountdown = MutableStateFlow("02:00")
     val qrCountdown: StateFlow<String> = _qrCountdown.asStateFlow()
+
+    val localNetworkManager = LocalNetworkManager(application)
+    val wifiIpInfo: StateFlow<WifiIpInfo> = localNetworkManager.wifiIpInfo
+    val discoveredLanDevices: StateFlow<List<DiscoveredLanDevice>> = localNetworkManager.discoveredDevices
+    val isScanningLan: StateFlow<Boolean> = localNetworkManager.isScanning
 
     // Navigation events for safe transition
     private val _navigationEvent = MutableSharedFlow<Screen>()
@@ -296,8 +304,61 @@ class LinkingViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
+    fun refreshWifiInfo() {
+        localNetworkManager.refreshNetworkInfo()
+    }
+
+    fun scanLocalNetwork() {
+        localNetworkManager.scanLocalSubnet()
+    }
+
+    /**
+     * Connects and links device over local Wi-Fi / IP network.
+     */
+    fun linkWithIpAddress(
+        context: Context,
+        ipAddress: String,
+        port: Int = LocalNetworkManager.DEFAULT_PORT,
+        deviceName: String = "Terminal Wi-Fi"
+    ) {
+        val targetIp = ipAddress.trim()
+        if (targetIp.isBlank()) {
+            _uiState.value = LinkingUiState.Error("Por favor ingrese una dirección IP válida (ej: 192.168.1.100).")
+            return
+        }
+
+        viewModelScope.launch {
+            _uiState.value = LinkingUiState.Validating("Conectando con el Servidor en $targetIp:$port vía Wi-Fi...")
+
+            val result = localNetworkManager.sendPairingRequest(
+                targetIp = targetIp,
+                port = port,
+                myDeviceName = deviceName,
+                myRole = "RECEPCION"
+            )
+
+            result.onSuccess {
+                executeLinkingProcess(
+                    context = context,
+                    role = "RECEPCION",
+                    token = "WIFI-IP-$targetIp",
+                    deviceName = deviceName
+                )
+            }.onFailure { error ->
+                _uiState.value = LinkingUiState.Error(
+                    error.message ?: "No se pudo establecer conexión con $targetIp:$port en la red local."
+                )
+            }
+        }
+    }
+
     fun resetState() {
         _uiState.value = LinkingUiState.Idle
         _pinInput.value = ""
+    }
+
+    override fun onCleared() {
+        super.onCleared()
+        localNetworkManager.cleanup()
     }
 }

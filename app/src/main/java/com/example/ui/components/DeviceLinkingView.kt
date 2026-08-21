@@ -31,10 +31,13 @@ import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.CloudSync
 import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.Key
+import androidx.compose.material.icons.filled.Lan
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.QrCodeScanner
+import androidx.compose.material.icons.filled.Router
 import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.Sync
+import androidx.compose.material.icons.filled.Wifi
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -49,10 +52,14 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -75,6 +82,7 @@ import com.example.ui.viewmodel.LinkingUiState
 import com.example.ui.viewmodel.LinkingViewModel
 import com.example.utils.QrScannerManager
 import com.journeyapps.barcodescanner.ScanContract
+import kotlinx.coroutines.delay
 
 /**
  * Componente de Compose para la vista de 'Vincular Dispositivo'.
@@ -94,6 +102,12 @@ fun DeviceLinkingView(
 
     val uiState by viewModel.uiState.collectAsState()
     val pinInput by viewModel.pinInput.collectAsState()
+    val wifiIpInfo by viewModel.wifiIpInfo.collectAsState()
+    val discoveredLanDevices by viewModel.discoveredLanDevices.collectAsState()
+    val isScanningLan by viewModel.isScanningLan.collectAsState()
+
+    var targetIpInput by remember { mutableStateOf("") }
+    var terminalNameInput by remember { mutableStateOf("Terminal Recepción") }
 
     // ActivityResultLauncher for ZXing Intent Scan
     val zxingScanLauncher = rememberLauncherForActivityResult(
@@ -179,6 +193,12 @@ fun DeviceLinkingView(
                 }
 
                 is LinkingUiState.Success -> {
+                    val successState = state as LinkingUiState.Success
+                    LaunchedEffect(successState) {
+                        delay(1500L)
+                        onLinkingSuccess(successState.targetScreen)
+                    }
+
                     // Pantalla de Éxito
                     Column(
                         modifier = Modifier
@@ -355,6 +375,146 @@ fun DeviceLinkingView(
                             text = "Vincular con PIN",
                             fontWeight = FontWeight.Bold,
                             color = HotelNavy
+                        )
+                    }
+
+                    // Separador visual
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Divider(modifier = Modifier.weight(1f))
+                        Text(
+                            text = "O POR RED LOCAL",
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.outline
+                        )
+                        Divider(modifier = Modifier.weight(1f))
+                    }
+
+                    // 3. Sección de Conexión Wi-Fi / IP
+                    Text(
+                        text = "Opción 3: Conectar por Wi-Fi / IP Local",
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+
+                    Surface(
+                        color = HotelNavy.copy(alpha = 0.05f),
+                        shape = RoundedCornerShape(10.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(10.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column {
+                                Text("Red Wi-Fi:", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                Text(wifiIpInfo.wifiSsid, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.bodySmall)
+                            }
+                            Column(horizontalAlignment = Alignment.End) {
+                                Text("Mi IP:", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                Text(wifiIpInfo.localIpAddress, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.bodySmall, color = HotelNavy)
+                            }
+                        }
+                    }
+
+                    OutlinedButton(
+                        onClick = { viewModel.scanLocalNetwork() },
+                        enabled = !isScanningLan,
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(10.dp)
+                    ) {
+                        if (isScanningLan) {
+                            CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("Buscando en red local...", style = MaterialTheme.typography.bodySmall)
+                        } else {
+                            Icon(Icons.Default.Lan, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("Detectar Servidores en Red Wi-Fi", style = MaterialTheme.typography.bodySmall)
+                        }
+                    }
+
+                    if (discoveredLanDevices.isNotEmpty()) {
+                        discoveredLanDevices.forEach { dev ->
+                            Surface(
+                                color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.4f),
+                                shape = RoundedCornerShape(8.dp),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(8.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    Column {
+                                        Text(dev.deviceName, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.bodySmall)
+                                        Text("${dev.ipAddress}:${dev.port}", style = MaterialTheme.typography.labelSmall)
+                                    }
+                                    TextButton(
+                                        onClick = { targetIpInput = dev.ipAddress }
+                                    ) {
+                                        Text("Usar IP")
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    OutlinedTextField(
+                        value = targetIpInput,
+                        onValueChange = { targetIpInput = it },
+                        label = { Text("IP del Servidor (Gerente)") },
+                        placeholder = { Text("Ej: 192.168.1.100") },
+                        leadingIcon = {
+                            Icon(imageVector = Icons.Default.Router, contentDescription = null, tint = HotelNavy)
+                        },
+                        singleLine = true,
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("input_linking_ip")
+                    )
+
+                    Button(
+                        onClick = {
+                            keyboardController?.hide()
+                            viewModel.linkWithIpAddress(
+                                context = context,
+                                ipAddress = targetIpInput,
+                                deviceName = terminalNameInput
+                            )
+                        },
+                        enabled = targetIpInput.isNotBlank(),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = HotelNavy
+                        ),
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(50.dp)
+                            .testTag("btn_submit_linking_ip")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Wifi,
+                            contentDescription = null,
+                            tint = Color.White
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = "Vincular por Red Wi-Fi (IP)",
+                            fontWeight = FontWeight.Bold,
+                            color = Color.White
                         )
                     }
                 }

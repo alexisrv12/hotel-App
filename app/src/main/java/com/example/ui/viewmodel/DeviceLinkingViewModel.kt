@@ -22,6 +22,9 @@ import com.example.utils.DeviceLinkingUtils
 import com.example.utils.DeviceNotificationManager
 import com.example.utils.DevicePreferences
 import com.example.utils.PinValidationResult
+import com.example.utils.LocalNetworkManager
+import com.example.utils.WifiIpInfo
+import com.example.utils.DiscoveredLanDevice
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -129,6 +132,18 @@ class DeviceLinkingViewModel @JvmOverloads constructor(
 
     private val codeValidator = DeviceCodeValidationHelper.getInstance()
 
+    // Local Wi-Fi / LAN Network Manager
+    val localNetworkManager = LocalNetworkManager(application)
+    val wifiIpInfo: StateFlow<WifiIpInfo> = localNetworkManager.wifiIpInfo
+    val discoveredLanDevices: StateFlow<List<DiscoveredLanDevice>> = localNetworkManager.discoveredDevices
+    val isScanningLan: StateFlow<Boolean> = localNetworkManager.isScanning
+
+    private val _ipPingResult = MutableStateFlow<String?>(null)
+    val ipPingResult: StateFlow<String?> = _ipPingResult.asStateFlow()
+
+    private val _isConnectingIp = MutableStateFlow(false)
+    val isConnectingIp: StateFlow<Boolean> = _isConnectingIp.asStateFlow()
+
     // Current active 6-digit secure PIN for device pairing
     private val _currentPin = MutableStateFlow(DeviceLinkingUtility.generate6DigitPin())
     val currentPin: StateFlow<String> = _currentPin.asStateFlow()
@@ -175,6 +190,19 @@ class DeviceLinkingViewModel @JvmOverloads constructor(
     val userMessage: StateFlow<String?> = _userMessage.asStateFlow()
 
     init {
+        // Handle incoming LAN/Wi-Fi pairing requests from other devices
+        localNetworkManager.onDevicePairingReceived = { lanDevice ->
+            viewModelScope.launch {
+                linkDevice(
+                    name = lanDevice.deviceName,
+                    userAssigned = lanDevice.role,
+                    deviceId = lanDevice.deviceId,
+                    ipAddress = lanDevice.ipAddress
+                )
+                _userMessage.value = "¡Dispositivo vinculado por Wi-Fi: ${lanDevice.deviceName} (${lanDevice.ipAddress})!"
+            }
+        }
+
         viewModelScope.launch {
             val now = System.currentTimeMillis()
             val dbPin = hotelDao.getSettingValue("active_linking_pin")
@@ -663,5 +691,103 @@ class DeviceLinkingViewModel @JvmOverloads constructor(
      */
     fun clearPinValidationResult() {
         _pinValidationResult.value = null
+    }
+
+    /**
+     * Refreshes local Wi-Fi and IP address information.
+     */
+    fun refreshWifiNetworkInfo() {
+        localNetworkManager.refreshNetworkInfo()
+    }
+
+    /**
+     * Starts an active scan across the local Wi-Fi / LAN subnet to find other hotel devices.
+     */
+    fun scanLocalNetwork() {
+        localNetworkManager.scanLocalSubnet {
+            _userMessage.value = "Escaneo de red local Wi-Fi completado."
+        }
+    }
+
+    /**
+     * Pings a specific IP and port to test connection reachability and response latency.
+     */
+    fun pingLanIp(ip: String, port: Int = LocalNetworkManager.DEFAULT_PORT) {
+        viewModelScope.launch {
+            _ipPingResult.value = "Probando conexión con $ip:$port..."
+            val device = localNetworkManager.pingDevice(ip, port)
+            if (device != null) {
+                _ipPingResult.value = "¡Conexión exitosa! Latencia: ${device.responseTimeMs} ms (${device.deviceName})"
+            } else {
+                _ipPingResult.value = "No se pudo conectar a $ip:$port. Verifique la dirección IP y que el dispositivo esté en la misma red Wi-Fi."
+            }
+        }
+    }
+
+    fun clearIpPingResult() {
+        _ipPingResult.value = null
+    }
+
+    /**
+     * Connects to and pairs with another hotel terminal via direct Wi-Fi IP address.
+     */
+    fun connectViaLanIp(
+        targetIp: String,
+        port: Int = LocalNetworkManager.DEFAULT_PORT,
+        deviceName: String = "Terminal Wi-Fi",
+        role: String = "RECEPCIÓN",
+        context: Context? = null,
+        onSuccess: (() -> Unit)? = null
+    ) {
+        viewModelScope.launch {
+            _isConnectingIp.value = true
+            _pairingStatus.value = PairingStatus.PAIRING
+            _pairingErrorMessage.value = null
+            _hasPairingFailed.value = false
+
+            val result = localNetworkManager.sendPairingRequest(
+                targetIp = targetIp.trim(),
+                port = port,
+                myDeviceName = deviceName,
+                myRole = role
+            )
+
+            _isConnectingIp.value = false
+
+            result.onSuccess { successMsg ->
+                _pairingStatus.value = PairingStatus.SUCCESS
+                _hasPairingFailed.value = false
+                _userMessage.value = successMsg
+
+                // Persist device in local Room database
+                val deviceId = "LAN-${targetIp.replace(".", "").takeLast(6)}"
+                linkDevice(
+                    name = deviceName,
+                    userAssigned = role,
+                    deviceId = deviceId,
+                    ipAddress = targetIp.trim()
+                )
+
+                if (context != null) {
+                    DevicePreferences.setDeviceLinked(context, deviceId, "$deviceName@lan.hotelrivera.com")
+                    DeviceDataStoreManager(context).saveDeviceAuthorization(
+                        deviceId = deviceId,
+                        email = "$deviceName@lan.hotelrivera.com"
+                    )
+                }
+
+                onSuccess?.invoke()
+            }.onFailure { error ->
+                _pairingStatus.value = PairingStatus.FAILED
+                _hasPairingFailed.value = true
+                _pairingErrorMessage.value = error.message ?: "Error al conectar por IP"
+                _userMessage.value = "Fallo de conexión Wi-Fi/IP: ${error.message}"
+            }
+        }
+    }
+
+    override fun onCleared() {
+        super.onCleared()
+        localNetworkManager.cleanup()
     }
 }
