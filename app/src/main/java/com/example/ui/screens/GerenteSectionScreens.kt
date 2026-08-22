@@ -1190,7 +1190,10 @@ fun GerenteReportsScreen(
                             stayHistory = history,
                             invoices = invoices,
                             saleRecords = sales,
-                            totalRoomsCount = totalRoomsCount
+                            totalRoomsCount = totalRoomsCount,
+                            onResetMetrics = {
+                                viewModel.resetOccupancyAndRevenueMetrics()
+                            }
                         )
 
                         // Room Performance Cards

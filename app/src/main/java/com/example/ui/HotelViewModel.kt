@@ -17,6 +17,7 @@ import com.example.data.entities.HotelSettingEntity
 import com.example.data.entities.InvoiceEntity
 import com.example.data.entities.MaintenanceRequestEntity
 import com.example.data.entities.ProductEntity
+import com.example.data.entities.ReservationEntity
 import com.example.data.entities.RoomEntity
 import com.example.data.entities.RoomStatus
 import com.example.data.entities.SaleRecordEntity
@@ -24,6 +25,7 @@ import com.example.data.entities.StayHistoryEntity
 import com.example.data.entities.SupplyEntity
 import com.example.data.entities.TimeRateEntity
 import com.example.data.entities.UserEntity
+import com.example.data.repository.HotelFirestoreRepository
 import com.example.data.repository.HotelRepository
 import com.example.data.repository.SessionDataStoreRepository
 import com.example.data.repository.UserSession
@@ -31,11 +33,13 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import com.example.utils.HotelNotificationHelper
 import org.json.JSONArray
@@ -102,6 +106,7 @@ class HotelViewModel(application: Application) : AndroidViewModel(application) {
     val auditLogs: StateFlow<List<AuditLogEntity>>
     val housekeepingTasks: StateFlow<List<HousekeepingTaskEntity>>
     val maintenanceRequests: StateFlow<List<MaintenanceRequestEntity>>
+    val reservations: StateFlow<List<ReservationEntity>>
     val lowStockSupplies: StateFlow<List<SupplyEntity>>
 
     // Live Clock for Room Timers
@@ -139,23 +144,90 @@ class HotelViewModel(application: Application) : AndroidViewModel(application) {
 
     init {
         val database = HotelDatabase.getDatabase(application, viewModelScope)
-        repository = HotelRepository(database.hotelDao())
+        val firestoreRepo = HotelFirestoreRepository.getInstance(
+            application.applicationContext,
+            database.hotelDao(),
+            database.deviceDao(),
+            sessionRepo
+        )
+        repository = HotelRepository(database.hotelDao(), firestoreRepo)
 
-        rooms = repository.allRooms.toStateFlow(emptyList())
-        timeRates = repository.allTimeRates.toStateFlow(emptyList())
-        supplies = repository.allSupplies.toStateFlow(emptyList())
-        products = repository.allProducts.toStateFlow(emptyList())
-        saleRecords = repository.allSaleRecords.toStateFlow(emptyList())
-        stayHistory = repository.allStayHistory.toStateFlow(emptyList())
-        users = repository.allUsers.toStateFlow(emptyList())
-        settings = repository.allSettings.toStateFlow(emptyList())
-        invoices = repository.allInvoices.toStateFlow(emptyList())
-        auditLogs = repository.allAuditLogs.toStateFlow(emptyList())
-        housekeepingTasks = repository.allHousekeepingTasks.toStateFlow(emptyList())
-        maintenanceRequests = repository.allMaintenanceRequests.toStateFlow(emptyList())
+        rooms = repository.allRooms.stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.WhileSubscribed(5000),
+            initialValue = emptyList()
+        )
+        timeRates = repository.allTimeRates.stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.WhileSubscribed(5000),
+            initialValue = emptyList()
+        )
+        supplies = repository.allSupplies.stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.WhileSubscribed(5000),
+            initialValue = emptyList()
+        )
+        products = repository.allProducts.stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.WhileSubscribed(5000),
+            initialValue = emptyList()
+        )
+        saleRecords = repository.allSaleRecords.stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.WhileSubscribed(5000),
+            initialValue = emptyList()
+        )
+        stayHistory = repository.allStayHistory.stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.WhileSubscribed(5000),
+            initialValue = emptyList()
+        )
+        users = repository.allUsers.stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.WhileSubscribed(5000),
+            initialValue = emptyList()
+        )
+        settings = repository.allSettings.stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.WhileSubscribed(5000),
+            initialValue = emptyList()
+        )
+        invoices = repository.allInvoices.stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.WhileSubscribed(5000),
+            initialValue = emptyList()
+        )
+        auditLogs = repository.allAuditLogs.stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.WhileSubscribed(5000),
+            initialValue = emptyList()
+        )
+        housekeepingTasks = repository.allHousekeepingTasks.stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.WhileSubscribed(5000),
+            initialValue = emptyList()
+        )
+        maintenanceRequests = repository.allMaintenanceRequests.stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.WhileSubscribed(5000),
+            initialValue = emptyList()
+        )
+        reservations = repository.allReservations.stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.WhileSubscribed(5000),
+            initialValue = emptyList()
+        )
 
-        userRole = sessionRepo.userRoleFlow.toStateFlow(null)
-        isDeviceAuthorized = sessionRepo.isDeviceAuthorizedFlow.toStateFlow(false)
+        userRole = sessionRepo.userRoleFlow.stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.WhileSubscribed(5000),
+            initialValue = null
+        )
+        isDeviceAuthorized = sessionRepo.isDeviceAuthorizedFlow.stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.WhileSubscribed(5000),
+            initialValue = false
+        )
 
         // Automated low stock supplies monitoring and system notification dispatch
         val lowStockFlow = MutableStateFlow<List<SupplyEntity>>(emptyList())
@@ -187,7 +259,41 @@ class HotelViewModel(application: Application) : AndroidViewModel(application) {
         }
         lowStockSupplies = lowStockFlow.asStateFlow()
 
-        // App launch always defaults to Screen.LOGIN as requested
+        // Restore persistent session and last screen if user was logged in
+        viewModelScope.launch {
+            try {
+                val session = sessionRepo.getUserSession()
+                val isLoggedIn = sessionRepo.isLoggedIn()
+                val lastScreenName = sessionRepo.getLastScreen()
+
+                if (isLoggedIn && (!session.userRole.isNullOrBlank() || !session.userName.isNullOrBlank())) {
+                    _activeUser.value = session.userName ?: "Usuario Rivera"
+                    
+                    val restoredScreen = if (!lastScreenName.isNullOrBlank()) {
+                        try {
+                            Screen.valueOf(lastScreenName)
+                        } catch (e: Exception) {
+                            null
+                        }
+                    } else null
+
+                    if (restoredScreen != null && restoredScreen != Screen.LOGIN && restoredScreen != Screen.GERENTE_PIN && restoredScreen != Screen.PERMISSIONS) {
+                        _currentScreen.value = restoredScreen
+                    } else {
+                        val role = session.userRole ?: "RECEPCION"
+                        if (role.equals("GERENTE", ignoreCase = true) || role.equals("ADMIN", ignoreCase = true)) {
+                            _currentScreen.value = Screen.MAIN
+                        } else {
+                            _currentScreen.value = Screen.RECEPCION
+                        }
+                    }
+                } else {
+                    _currentScreen.value = Screen.LOGIN
+                }
+            } catch (e: Exception) {
+                _currentScreen.value = Screen.LOGIN
+            }
+        }
 
         startLiveClock()
         monitorRoomTimers()
@@ -196,7 +302,8 @@ class HotelViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun ensureDefaultUsers() {
         viewModelScope.launch {
-            repository.allUsers.collectLatest { currentUsers ->
+            try {
+                val currentUsers = repository.allUsers.first()
                 if (currentUsers.none { it.username.equals("riverahotel01@gmail.com", ignoreCase = true) }) {
                     repository.saveUser(
                         UserEntity(
@@ -207,6 +314,8 @@ class HotelViewModel(application: Application) : AndroidViewModel(application) {
                         )
                     )
                 }
+            } catch (e: Exception) {
+                e.printStackTrace()
             }
         }
     }
@@ -327,6 +436,7 @@ class HotelViewModel(application: Application) : AndroidViewModel(application) {
                     userEmail = matchedUser.username,
                     userName = matchedUser.fullName
                 )
+                sessionRepo.saveLastScreen(Screen.MAIN.name)
             }
             return true
         }
@@ -342,6 +452,7 @@ class HotelViewModel(application: Application) : AndroidViewModel(application) {
                     userEmail = "riverahotel01@gmail.com",
                     userName = "Gerencia Rivera Hotel"
                 )
+                sessionRepo.saveLastScreen(Screen.MAIN.name)
             }
             return true
         }
@@ -356,6 +467,7 @@ class HotelViewModel(application: Application) : AndroidViewModel(application) {
                     userEmail = "gerencia@hotelrivera.com",
                     userName = "Gerencia Hotel Rivera"
                 )
+                sessionRepo.saveLastScreen(Screen.MAIN.name)
             }
             return true
         }
@@ -370,6 +482,7 @@ class HotelViewModel(application: Application) : AndroidViewModel(application) {
                     userEmail = "recepcion@hotelrivera.com",
                     userName = "Recepción Turno Principal"
                 )
+                sessionRepo.saveLastScreen(Screen.MAIN.name)
             }
             return true
         }
@@ -441,6 +554,11 @@ class HotelViewModel(application: Application) : AndroidViewModel(application) {
         }
 
         _currentScreen.value = screen
+        if (screen != Screen.LOGIN && screen != Screen.GERENTE_PIN && screen != Screen.PERMISSIONS) {
+            viewModelScope.launch {
+                sessionRepo.saveLastScreen(screen.name)
+            }
+        }
     }
 
     fun validateManagerPin(enteredPin: String) {
@@ -453,6 +571,7 @@ class HotelViewModel(application: Application) : AndroidViewModel(application) {
                     userEmail = "gerencia@hotelrivera.com",
                     userName = "Gerencia Rivera Hotel"
                 )
+                sessionRepo.saveLastScreen(Screen.GERENTE_DASHBOARD.name)
                 _currentScreen.value = Screen.GERENTE_DASHBOARD
             } else {
                 _pinError.value = "PIN Incorrecto. Intente de nuevo."
@@ -498,6 +617,125 @@ class HotelViewModel(application: Application) : AndroidViewModel(application) {
                 totalAmount = rate.price
             )
             _userMessage.value = "Hospedaje registrado exitosamente."
+        }
+    }
+
+    fun createReservation(
+        roomNumber: String,
+        roomId: Long,
+        clientName: String,
+        clientDpi: String?,
+        clientPhone: String?,
+        guestCount: Int,
+        reservationDateMillis: Long,
+        checkInDateString: String,
+        checkInTime: String,
+        durationText: String,
+        durationMinutes: Long,
+        rateName: String,
+        totalPrice: Double,
+        advancePayment: Double,
+        paymentMethod: String,
+        notes: String?,
+        isImmediateCheckIn: Boolean = false,
+        onComplete: () -> Unit = {}
+    ) {
+        viewModelScope.launch {
+            val res = ReservationEntity(
+                roomNumber = roomNumber,
+                roomId = roomId,
+                clientName = clientName.trim(),
+                clientDpi = clientDpi?.trim()?.ifEmpty { null },
+                clientPhone = clientPhone?.trim()?.ifEmpty { null },
+                guestCount = guestCount,
+                reservationDateMillis = reservationDateMillis,
+                checkInDateString = checkInDateString,
+                checkInTime = checkInTime,
+                durationText = durationText,
+                durationMinutes = durationMinutes,
+                rateName = rateName,
+                totalPrice = totalPrice,
+                advancePayment = advancePayment,
+                paymentMethod = paymentMethod,
+                notes = notes?.trim()?.ifEmpty { null },
+                status = if (isImmediateCheckIn) "CHECKED_IN" else "CONFIRMADA"
+            )
+            repository.insertReservation(res, _activeUser.value)
+
+            if (isImmediateCheckIn) {
+                // Also trigger immediate check-in for this room
+                val selectedRate = timeRates.value.find { it.durationMinutes == durationMinutes }
+                    ?: TimeRateEntity(name = durationText, durationMinutes = durationMinutes, price = totalPrice)
+                repository.checkInRoom(
+                    roomId = roomId,
+                    clientName = clientName.trim(),
+                    clientDpi = clientDpi?.trim()?.ifEmpty { null },
+                    guestCount = guestCount,
+                    rate = selectedRate.copy(price = totalPrice),
+                    notes = notes?.trim()?.ifEmpty { null },
+                    receptionistName = _activeUser.value
+                )
+                val hours = (durationMinutes / 60).toInt().coerceAtLeast(1)
+                HotelNotificationHelper.sendGuestCheckInAlert(
+                    context = getApplication(),
+                    roomNumber = roomNumber,
+                    guestName = clientName,
+                    durationHours = hours,
+                    totalAmount = totalPrice
+                )
+                _userMessage.value = "Check-In realizado con éxito para Habitación $roomNumber."
+            } else {
+                _userMessage.value = "Reservación guardada para el $checkInDateString (Hab. $roomNumber)."
+            }
+            onComplete()
+        }
+    }
+
+    fun cancelReservation(reservationId: Long) {
+        viewModelScope.launch {
+            repository.cancelReservation(reservationId, _activeUser.value)
+            _userMessage.value = "Reservación cancelada."
+        }
+    }
+
+    fun executeCheckInForReservation(reservation: ReservationEntity, onComplete: () -> Unit = {}) {
+        viewModelScope.launch {
+            val selectedRate = timeRates.value.find { it.durationMinutes == reservation.durationMinutes }
+                ?: TimeRateEntity(name = reservation.durationText, durationMinutes = reservation.durationMinutes, price = reservation.totalPrice)
+            
+            repository.checkInRoom(
+                roomId = reservation.roomId,
+                clientName = reservation.clientName,
+                clientDpi = reservation.clientDpi,
+                guestCount = reservation.guestCount,
+                rate = selectedRate.copy(price = reservation.totalPrice),
+                notes = reservation.notes,
+                receptionistName = _activeUser.value
+            )
+
+            // Update reservation status to CHECKED_IN
+            repository.updateReservation(
+                reservation.copy(status = "CHECKED_IN"),
+                staffName = _activeUser.value
+            )
+
+            val hours = (reservation.durationMinutes / 60).toInt().coerceAtLeast(1)
+            HotelNotificationHelper.sendGuestCheckInAlert(
+                context = getApplication(),
+                roomNumber = reservation.roomNumber,
+                guestName = reservation.clientName,
+                durationHours = hours,
+                totalAmount = reservation.totalPrice
+            )
+            _userMessage.value = "Check-In activado para Habitación ${reservation.roomNumber} (${reservation.clientName})."
+            onComplete()
+        }
+    }
+
+    fun deleteReservation(id: Long) {
+        viewModelScope.launch {
+            repository.deleteReservation(id)
+            _userMessage.value = "Registro de reserva eliminado."
         }
     }
 
@@ -821,6 +1059,14 @@ class HotelViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             repository.deleteHistoryItem(id)
             _userMessage.value = "Registro de historial eliminado."
+        }
+    }
+
+    fun resetOccupancyAndRevenueMetrics(onSuccess: (() -> Unit)? = null) {
+        viewModelScope.launch {
+            repository.resetAllMetricsHistory()
+            _userMessage.value = "Métricas e historial restablecidos. Iniciando desde cero."
+            onSuccess?.invoke()
         }
     }
 

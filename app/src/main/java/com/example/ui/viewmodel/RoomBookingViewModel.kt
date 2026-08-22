@@ -9,7 +9,9 @@ import com.example.data.entities.RoomEntity
 import com.example.data.entities.RoomStatus
 import com.example.data.entities.StayHistoryEntity
 import com.example.data.entities.TimeRateEntity
+import com.example.data.repository.HotelFirestoreRepository
 import com.example.data.repository.HotelRepository
+import com.example.data.repository.SessionDataStoreRepository
 import com.example.utils.HotelNotificationHelper
 import com.google.firebase.FirebaseApp
 import com.google.firebase.firestore.FirebaseFirestore
@@ -58,7 +60,14 @@ class RoomBookingViewModel(
 ) : AndroidViewModel(application) {
 
     private val db = HotelDatabase.getDatabase(application)
-    private val repository = HotelRepository(db.hotelDao())
+    private val sessionRepo = SessionDataStoreRepository(application)
+    private val firestoreRepo = HotelFirestoreRepository.getInstance(
+        application.applicationContext,
+        db.hotelDao(),
+        db.deviceDao(),
+        sessionRepo
+    )
+    private val repository = HotelRepository(db.hotelDao(), firestoreRepo)
 
     val availableRooms: StateFlow<List<RoomEntity>> = repository.allRooms
         .combine(MutableStateFlow(Unit)) { rooms, _ ->

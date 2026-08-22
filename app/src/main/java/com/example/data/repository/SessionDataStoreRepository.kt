@@ -44,9 +44,23 @@ class SessionDataStoreRepository(private val context: Context) {
         val KEY_ACTIVE_LINKING_PIN_TS = longPreferencesKey("active_linking_pin_ts")
         val KEY_ACTIVE_LINKING_QR = stringPreferencesKey("active_linking_qr")
         val KEY_ACTIVE_LINKING_QR_TS = longPreferencesKey("active_linking_qr_ts")
+        val KEY_LAST_SCREEN = stringPreferencesKey("last_active_screen")
+        val KEY_IS_LOGGED_IN = booleanPreferencesKey("is_logged_in")
     }
 
     private val dataStore = context.sessionDataStore
+
+    val lastScreenFlow: Flow<String?> = dataStore.data
+        .catch { exception ->
+            if (exception is IOException) emit(emptyPreferences()) else throw exception
+        }
+        .map { preferences -> preferences[KEY_LAST_SCREEN] }
+
+    val isLoggedInFlow: Flow<Boolean> = dataStore.data
+        .catch { exception ->
+            if (exception is IOException) emit(emptyPreferences()) else throw exception
+        }
+        .map { preferences -> preferences[KEY_IS_LOGGED_IN] ?: (preferences[KEY_USER_ROLE] != null) }
 
     /**
      * Flow of the currently authenticated/authorized user role (e.g., "GERENTE", "RECEPCION", null)
@@ -132,12 +146,22 @@ class SessionDataStoreRepository(private val context: Context) {
         authToken: String? = null
     ) {
         dataStore.edit { preferences ->
+            preferences[KEY_IS_LOGGED_IN] = true
             preferences[KEY_USER_ROLE] = userRole.uppercase()
             preferences[KEY_USER_EMAIL] = userEmail
             preferences[KEY_USER_NAME] = userName
             if (authToken != null) {
                 preferences[KEY_AUTH_TOKEN] = authToken
             }
+        }
+    }
+
+    /**
+     * Saves the current active screen so app returns to the same view when reopened
+     */
+    suspend fun saveLastScreen(screenName: String) {
+        dataStore.edit { preferences ->
+            preferences[KEY_LAST_SCREEN] = screenName
         }
     }
 
@@ -186,10 +210,12 @@ class SessionDataStoreRepository(private val context: Context) {
      */
     suspend fun clearSession() {
         dataStore.edit { preferences ->
+            preferences[KEY_IS_LOGGED_IN] = false
             preferences.remove(KEY_USER_ROLE)
             preferences.remove(KEY_USER_EMAIL)
             preferences.remove(KEY_USER_NAME)
             preferences.remove(KEY_AUTH_TOKEN)
+            preferences.remove(KEY_LAST_SCREEN)
         }
     }
 
@@ -206,6 +232,10 @@ class SessionDataStoreRepository(private val context: Context) {
             preferences.remove(KEY_ACTIVE_LINKING_QR)
         }
     }
+
+    suspend fun getLastScreen(): String? = lastScreenFlow.first()
+
+    suspend fun isLoggedIn(): Boolean = isLoggedInFlow.first()
 
     suspend fun getUserRole(): String? = userRoleFlow.first()
 

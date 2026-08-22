@@ -2,9 +2,12 @@ package com.example.ui.screens
 
 import android.widget.Toast
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -37,7 +40,11 @@ import androidx.compose.material.icons.filled.Handyman
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Hotel
 import androidx.compose.material.icons.filled.NetworkCheck
+import androidx.compose.material.icons.filled.Notes
+import androidx.compose.material.icons.filled.Paid
+import androidx.compose.material.icons.filled.Payments
 import androidx.compose.material.icons.filled.Person
+import androidx.compose.material.icons.filled.PersonAdd
 import androidx.compose.material.icons.filled.QrCodeScanner
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Warning
@@ -60,6 +67,7 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExposedDropdownMenuBox
 import androidx.compose.material3.ExposedDropdownMenuDefaults
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
@@ -121,6 +129,7 @@ fun RecepcionScreen(
 ) {
     val context = LocalContext.current
     val stayHistory by viewModel.stayHistory.collectAsStateWithLifecycle()
+    val reservations by viewModel.reservations.collectAsStateWithLifecycle()
     val lowStockSupplies by viewModel.lowStockSupplies.collectAsStateWithLifecycle()
     var selectedReceptionTab by remember { mutableIntStateOf(0) } // 0: Cuadrícula, 1: Calendario & Check-Ins
     var selectedFilter by remember { mutableStateOf("TODAS") }
@@ -266,8 +275,11 @@ fun RecepcionScreen(
                 // CALENDAR & UPCOMING CHECK-INS VIEW COMPONENT
                 ReceptionCalendarComponent(
                     rooms = rooms,
+                    timeRates = timeRates,
+                    reservations = reservations,
                     stayHistory = stayHistory,
                     currentTimeMillis = currentTimeMillis,
+                    viewModel = viewModel,
                     onRoomCheckInClick = { selectedRoomForCheckIn = it },
                     onRoomOccupiedClick = { selectedRoomForOccupied = it },
                     onRoomCleaningClick = { selectedRoomForCleaning = it },
@@ -778,13 +790,17 @@ fun CheckInDialog(
     onConfirm: (clientName: String, dpi: String?, guests: Int, rate: TimeRateEntity, notes: String?) -> Unit
 ) {
     var clientName by remember { mutableStateOf("") }
-    var dpi by remember { mutableStateOf("") }
-    var guestsText by remember { mutableStateOf("2") }
     var notes by remember { mutableStateOf("") }
 
     var selectedRate by remember { mutableStateOf(timeRates.firstOrNull()) }
     var expandedRateDropdown by remember { mutableStateOf(false) }
+    var advancePaymentText by remember { mutableStateOf("") }
+    var paymentMethod by remember { mutableStateOf("Efectivo") }
     var errorMessage by remember { mutableStateOf<String?>(null) }
+
+    val ratePrice = selectedRate?.price ?: 0.0
+    val advanceAmount = advancePaymentText.replace(",", ".").toDoubleOrNull() ?: 0.0
+    val pendingPayment = (ratePrice - advanceAmount).coerceAtLeast(0.0)
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -792,37 +808,73 @@ fun CheckInDialog(
             Text("Hospedar en Habitación ${room.roomNumber}", fontWeight = FontWeight.Bold, fontSize = 18.sp)
         },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Column(
+                modifier = Modifier.verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
                 if (errorMessage != null) {
                     Text(errorMessage!!, color = StatusRed, fontSize = 12.sp)
                 }
 
-                OutlinedTextField(
-                    value = clientName,
-                    onValueChange = { clientName = it },
-                    label = { Text("Nombre del Cliente *") },
-                    singleLine = true,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .testTag("input_client_name")
-                )
+                // 1. Datos del Huésped
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text(
+                        text = "Datos del Huésped",
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = HotelNavy
+                    )
 
-                OutlinedTextField(
-                    value = dpi,
-                    onValueChange = { dpi = it },
-                    label = { Text("DPI / Documento (Opcional)") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
-                )
+                    OutlinedTextField(
+                        value = clientName,
+                        onValueChange = {
+                            clientName = it
+                            errorMessage = null
+                        },
+                        label = { Text("Nombre Completo *") },
+                        placeholder = { Text("Ej. Juan Pérez o Clientes Varios") },
+                        singleLine = true,
+                        leadingIcon = { Icon(Icons.Default.Person, contentDescription = null) },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("input_client_name")
+                    )
 
-                OutlinedTextField(
-                    value = guestsText,
-                    onValueChange = { guestsText = it },
-                    label = { Text("Número de Personas") },
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
-                )
+                    // Quick Selection Chips for Clientes Varios
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = "Opción rápida:",
+                            style = MaterialTheme.typography.labelSmall,
+                            fontSize = 10.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        FilterChip(
+                            selected = clientName == "Clientes Varios",
+                            onClick = {
+                                clientName = "Clientes Varios"
+                                errorMessage = null
+                            },
+                            label = { Text("Clientes Varios", fontSize = 11.sp, fontWeight = FontWeight.Medium) },
+                            leadingIcon = {
+                                Icon(Icons.Default.PersonAdd, contentDescription = null, modifier = Modifier.size(13.dp))
+                            },
+                            modifier = Modifier.height(28.dp)
+                        )
+                        FilterChip(
+                            selected = clientName == "Consumidor Final",
+                            onClick = {
+                                clientName = "Consumidor Final"
+                                errorMessage = null
+                            },
+                            label = { Text("C/F", fontSize = 11.sp, fontWeight = FontWeight.Medium) },
+                            modifier = Modifier.height(28.dp)
+                        )
+                    }
+                }
 
                 // Rate Type Dropdown
                 ExposedDropdownMenuBox(
@@ -834,6 +886,7 @@ fun CheckInDialog(
                         onValueChange = {},
                         readOnly = true,
                         label = { Text("Tipo de Tiempo / Tarifa *") },
+                        leadingIcon = { Icon(Icons.Default.Paid, contentDescription = null) },
                         trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expandedRateDropdown) },
                         modifier = Modifier
                             .menuAnchor()
@@ -855,27 +908,123 @@ fun CheckInDialog(
                     }
                 }
 
-                // Automatic Price Display
-                selectedRate?.let { rate ->
+                // 2. Anticipo y Pago Pendiente
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text(
+                        text = "Anticipo y Método de Pago",
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = HotelNavy
+                    )
+
+                    OutlinedTextField(
+                        value = advancePaymentText,
+                        onValueChange = { advancePaymentText = it },
+                        label = { Text("Registro de Anticipo / Depósito recibido (Q)") },
+                        placeholder = { Text("0.00") },
+                        leadingIcon = { Icon(Icons.Default.Payments, contentDescription = null, modifier = Modifier.size(16.dp)) },
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+
+                    // Quick Advance Chips
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        FilterChip(
+                            selected = advancePaymentText == "0" || advancePaymentText.isEmpty(),
+                            onClick = { advancePaymentText = "0" },
+                            label = { Text("Sin Anticipo (Q0)", fontSize = 10.sp) },
+                            modifier = Modifier.height(26.dp)
+                        )
+                        FilterChip(
+                            selected = advancePaymentText == String.format(Locale.US, "%.2f", ratePrice * 0.5),
+                            onClick = { advancePaymentText = String.format(Locale.US, "%.2f", ratePrice * 0.5) },
+                            label = { Text("50% (Q${String.format(Locale.US, "%.0f", ratePrice * 0.5)})", fontSize = 10.sp) },
+                            modifier = Modifier.height(26.dp)
+                        )
+                        FilterChip(
+                            selected = advancePaymentText == String.format(Locale.US, "%.2f", ratePrice),
+                            onClick = { advancePaymentText = String.format(Locale.US, "%.2f", ratePrice) },
+                            label = { Text("100% Total", fontSize = 10.sp) },
+                            modifier = Modifier.height(26.dp)
+                        )
+                    }
+
+                    // Payment Method Chips
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(4.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text("Método:", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        FilterChip(
+                            selected = paymentMethod == "Efectivo",
+                            onClick = { paymentMethod = "Efectivo" },
+                            label = { Text("Efectivo", fontSize = 9.sp) },
+                            modifier = Modifier.height(26.dp)
+                        )
+                        FilterChip(
+                            selected = paymentMethod == "Tarjeta",
+                            onClick = { paymentMethod = "Tarjeta" },
+                            label = { Text("Tarjeta", fontSize = 9.sp) },
+                            modifier = Modifier.height(26.dp)
+                        )
+                        FilterChip(
+                            selected = paymentMethod == "Transferencia",
+                            onClick = { paymentMethod = "Transferencia" },
+                            label = { Text("Transf.", fontSize = 9.sp) },
+                            modifier = Modifier.height(26.dp)
+                        )
+                    }
+
+                    // Financial Summary Breakdown Card with Pending Payment
                     Surface(
-                        color = HotelGold.copy(alpha = 0.15f),
+                        color = if (pendingPayment > 0) MaterialTheme.colorScheme.surfaceContainerHighest else StatusGreen.copy(alpha = 0.08f),
                         shape = RoundedCornerShape(8.dp),
+                        border = BorderStroke(1.dp, if (pendingPayment > 0) HotelGold.copy(alpha = 0.5f) else StatusGreen.copy(alpha = 0.4f)),
                         modifier = Modifier.fillMaxWidth()
                     ) {
-                        Row(
+                        Column(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(10.dp),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
+                                .padding(8.dp),
+                            verticalArrangement = Arrangement.spacedBy(4.dp)
                         ) {
-                            Text("Precio Automático:", fontWeight = FontWeight.Medium)
-                            Text(
-                                "Q${String.format(Locale.US, "%.2f", rate.price)}",
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 18.sp,
-                                color = HotelNavy
-                            )
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Text("Total a Pagar:", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                Text("Q${String.format(Locale.US, "%.2f", ratePrice)}", fontWeight = FontWeight.Bold, fontSize = 13.sp, color = HotelNavy)
+                            }
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Text("Anticipo Recibido:", fontSize = 12.sp, color = StatusGreen)
+                                Text("Q${String.format(Locale.US, "%.2f", advanceAmount)}", fontWeight = FontWeight.Bold, fontSize = 13.sp, color = StatusGreen)
+                            }
+                            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f), thickness = 0.5.dp)
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    "Saldo Pendiente:",
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 13.sp,
+                                    color = if (pendingPayment > 0) StatusRed else StatusGreen
+                                )
+                                Text(
+                                    "Q${String.format(Locale.US, "%.2f", pendingPayment)}",
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 15.sp,
+                                    color = if (pendingPayment > 0) StatusRed else StatusGreen
+                                )
+                            }
                         }
                     }
                 }
@@ -884,6 +1033,7 @@ fun CheckInDialog(
                     value = notes,
                     onValueChange = { notes = it },
                     label = { Text("Observaciones / Notas") },
+                    leadingIcon = { Icon(Icons.Default.Notes, contentDescription = null) },
                     modifier = Modifier.fillMaxWidth()
                 )
             }
@@ -899,8 +1049,12 @@ fun CheckInDialog(
                         errorMessage = "Por favor seleccione un tipo de tiempo."
                         return@Button
                     }
-                    val guests = guestsText.toIntOrNull() ?: 1
-                    onConfirm(clientName, dpi.ifBlank { null }, guests, selectedRate!!, notes.ifBlank { null })
+                    val finalNotes = if (advanceAmount > 0) {
+                        val payNote = "Anticipo: Q${"%.2f".format(advanceAmount)} ($paymentMethod) | Pendiente: Q${"%.2f".format(pendingPayment)}"
+                        if (notes.isBlank()) payNote else "$notes | $payNote"
+                    } else notes.ifBlank { null }
+
+                    onConfirm(clientName.trim(), null, 1, selectedRate!!, finalNotes)
                 },
                 colors = ButtonDefaults.buttonColors(containerColor = HotelNavy)
             ) {

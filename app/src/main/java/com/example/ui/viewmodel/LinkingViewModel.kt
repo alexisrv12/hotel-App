@@ -9,6 +9,7 @@ import com.example.data.entities.DeviceConnectionStatus
 import com.example.data.entities.DeviceEntity
 import com.example.data.entities.RealTimeConnectivityStatus
 import com.example.data.repository.DeviceRepository
+import com.example.data.repository.HotelFirestoreRepository
 import com.example.data.repository.SessionDataStoreRepository
 import com.example.ui.Screen
 import com.example.utils.DeviceCodeValidationHelper
@@ -47,8 +48,10 @@ sealed class LinkingUiState {
 class LinkingViewModel(application: Application) : AndroidViewModel(application) {
 
     private val sessionRepo = SessionDataStoreRepository(application)
+    private val hotelDao = HotelDatabase.getDatabase(application).hotelDao()
     private val deviceDao = HotelDatabase.getDatabase(application).deviceDao()
     private val deviceRepo = DeviceRepository(deviceDao)
+    private val firestoreRepo = HotelFirestoreRepository.getInstance(application, hotelDao, deviceDao, sessionRepo)
     private val codeValidator = DeviceCodeValidationHelper.getInstance()
     private val random = SecureRandom()
 
@@ -92,7 +95,7 @@ class LinkingViewModel(application: Application) : AndroidViewModel(application)
         viewModelScope.launch {
             val (savedPin, pinTs) = sessionRepo.getActivePin()
             val now = System.currentTimeMillis()
-            if (!savedPin.isNullOrBlank() && pinTs > 0 && (now - pinTs < 120_000L)) {
+            if (!savedPin.isNullOrBlank() && pinTs > 0 && (now - pinTs < 300_000L)) {
                 _activeManagerPin.value = savedPin
                 _pinTimestamp.value = pinTs
             } else {
@@ -100,7 +103,7 @@ class LinkingViewModel(application: Application) : AndroidViewModel(application)
             }
 
             val (savedQr, qrTs) = sessionRepo.getActiveQrToken()
-            if (!savedQr.isNullOrBlank() && qrTs > 0 && (now - qrTs < 120_000L)) {
+            if (!savedQr.isNullOrBlank() && qrTs > 0 && (now - qrTs < 300_000L)) {
                 _activeManagerQr.value = savedQr
                 _qrTimestamp.value = qrTs
             } else {
@@ -110,10 +113,10 @@ class LinkingViewModel(application: Application) : AndroidViewModel(application)
             // Ticker loop
             while (isActive) {
                 val current = System.currentTimeMillis()
-                if (current - _pinTimestamp.value >= 120_000L) {
+                if (current - _pinTimestamp.value >= 300_000L) {
                     refreshActivePin()
                 }
-                if (current - _qrTimestamp.value >= 120_000L) {
+                if (current - _qrTimestamp.value >= 300_000L) {
                     refreshActiveQr()
                 }
                 _pinCountdown.value = codeValidator.getFormattedCountdown(_pinTimestamp.value, current)
@@ -150,7 +153,8 @@ class LinkingViewModel(application: Application) : AndroidViewModel(application)
         _activeManagerPin.value = newPin
         _pinTimestamp.value = now
         viewModelScope.launch {
-            sessionRepo.saveActiveLinkingPin(newPin, now)
+            sessionRepo.saveActiveLinkingPin(newPin, now + 300_000L)
+            firestoreRepo.generateLinkingCode("RECEPCION", customPin = newPin)
         }
     }
 
@@ -160,7 +164,8 @@ class LinkingViewModel(application: Application) : AndroidViewModel(application)
         _activeManagerQr.value = newQr
         _qrTimestamp.value = now
         viewModelScope.launch {
-            sessionRepo.saveActiveLinkingQr(newQr, now)
+            sessionRepo.saveActiveLinkingQr(newQr, now + 300_000L)
+            firestoreRepo.generateLinkingCode("RECEPCION", customToken = newQr)
         }
     }
 
@@ -174,20 +179,33 @@ class LinkingViewModel(application: Application) : AndroidViewModel(application)
             return
         }
 
-        val now = System.currentTimeMillis()
-        val isPinValid = enteredPin == _activeManagerPin.value && (now - _pinTimestamp.value <= 120_000L)
+        viewModelScope.launch {
+            _uiState.value = LinkingUiState.Validating("Verificando PIN de vinculación...")
+            val deviceId = DevicePreferences.getLinkedDeviceId(context)
 
-        if (!isPinValid) {
-            _uiState.value = LinkingUiState.Error("PIN no válido o ha expirado. Solicite un nuevo PIN en Gerencia.")
-            return
+            val cloudResult = firestoreRepo.linkDeviceByPin(enteredPin, deviceId, deviceName)
+            if (cloudResult.isSuccess) {
+                executeLinkingProcess(
+                    context = context,
+                    role = "RECEPCION",
+                    token = enteredPin,
+                    deviceName = deviceName
+                )
+            } else {
+                val now = System.currentTimeMillis()
+                val isPinValid = enteredPin == _activeManagerPin.value && (now - _pinTimestamp.value <= 300_000L)
+                if (isPinValid) {
+                    executeLinkingProcess(
+                        context = context,
+                        role = "RECEPCION",
+                        token = enteredPin,
+                        deviceName = deviceName
+                    )
+                } else {
+                    _uiState.value = LinkingUiState.Error("PIN no válido o ha expirado. Solicite un nuevo PIN en Gerencia.")
+                }
+            }
         }
-
-        executeLinkingProcess(
-            context = context,
-            role = "RECEPCION",
-            token = enteredPin,
-            deviceName = deviceName
-        )
     }
 
     /**
@@ -205,24 +223,43 @@ class LinkingViewModel(application: Application) : AndroidViewModel(application)
             return
         }
 
-        val now = System.currentTimeMillis()
-        val isQrMatch = scannedData.token == _activeManagerQr.value ||
-                scannedData.rawContent.contains(_activeManagerQr.value) ||
-                scannedData.token.startsWith("RIVERA-LINK-")
+        viewModelScope.launch {
+            _uiState.value = LinkingUiState.Validating("Validando token QR...")
+            val deviceId = DevicePreferences.getLinkedDeviceId(context)
 
-        val isExpired = now - _qrTimestamp.value > 120_000L
+            val cloudResult = firestoreRepo.linkDeviceByQr(scannedData.token, deviceId, deviceName)
+            if (cloudResult.isSuccess) {
+                executeLinkingProcess(
+                    context = context,
+                    role = scannedData.role.ifBlank { "RECEPCION" },
+                    token = scannedData.token,
+                    deviceName = scannedData.deviceName ?: deviceName
+                )
+            } else {
+                val now = System.currentTimeMillis()
+                val isQrMatch = scannedData.token == _activeManagerQr.value ||
+                        scannedData.rawContent.contains(_activeManagerQr.value) ||
+                        scannedData.token.startsWith("RIVERA-LINK-")
 
-        if (isExpired && !scannedData.token.startsWith("RIVERA-LINK-")) {
-            _uiState.value = LinkingUiState.Error("El código QR ha expirado. Genere uno nuevo.")
-            return
+                val isExpired = now - _qrTimestamp.value > 300_000L
+
+                if (isExpired && !scannedData.token.startsWith("RIVERA-LINK-")) {
+                    _uiState.value = LinkingUiState.Error("El código QR ha expirado. Genere uno nuevo.")
+                    return@launch
+                }
+
+                if (isQrMatch) {
+                    executeLinkingProcess(
+                        context = context,
+                        role = scannedData.role.ifBlank { "RECEPCION" },
+                        token = scannedData.token,
+                        deviceName = scannedData.deviceName ?: deviceName
+                    )
+                } else {
+                    _uiState.value = LinkingUiState.Error("El código QR no coincide con ninguna sesión activa.")
+                }
+            }
         }
-
-        executeLinkingProcess(
-            context = context,
-            role = scannedData.role.ifBlank { "RECEPCION" },
-            token = scannedData.token,
-            deviceName = scannedData.deviceName ?: deviceName
-        )
     }
 
     /**
@@ -237,16 +274,16 @@ class LinkingViewModel(application: Application) : AndroidViewModel(application)
     ) {
         viewModelScope.launch {
             _uiState.value = LinkingUiState.Validating("Verificando token criptográfico con Estación Central...")
-            delay(500)
-
-            _uiState.value = LinkingUiState.Syncing(0.2f, "Estableciendo canal seguro SSL/TLS...")
             delay(400)
+
+            _uiState.value = LinkingUiState.Syncing(0.2f, "Estableciendo canal seguro SSL/TLS con Firestore...")
+            delay(300)
 
             _uiState.value = LinkingUiState.Syncing(0.5f, "Descargando tarifas y configuración de habitaciones...")
-            delay(500)
+            delay(400)
 
             _uiState.value = LinkingUiState.Syncing(0.85f, "Sincronizando inventario y catálogo de recepción...")
-            delay(400)
+            delay(300)
 
             // Save in DataStore and Room
             val deviceId = DevicePreferences.getLinkedDeviceId(context)
@@ -267,6 +304,7 @@ class LinkingViewModel(application: Application) : AndroidViewModel(application)
 
             // Sync with Legacy DataStore and SharedPreferences
             DeviceDataStoreManager(context).saveDeviceAuthorization(deviceId, email)
+            DevicePreferences.setDeviceAuthorized(context, true)
 
             // Register in Room database
             val deviceEntity = DeviceEntity(
@@ -279,6 +317,9 @@ class LinkingViewModel(application: Application) : AndroidViewModel(application)
                 timestamp = System.currentTimeMillis()
             )
             deviceRepo.insertDevice(deviceEntity)
+
+            // Start Firestore real-time listeners on this device
+            firestoreRepo.startRealtimeListeners()
 
             // Regenerate tokens to invalidate used ones
             refreshActivePin()

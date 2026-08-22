@@ -26,11 +26,15 @@ object HotelNotificationHelper {
     const val CHANNEL_MAINTENANCE = "hotel_maintenance_tasks_channel"
     const val CHANNEL_SYSTEM_ALERTS = "hotel_system_alerts_channel"
     const val CHANNEL_INVENTORY_ALERTS = "hotel_inventory_alerts_channel"
+    const val CHANNEL_ROOM_TIMERS = "hotel_room_timers_alerts_channel"
+    const val CHANNEL_BACKGROUND_SERVICE = "hotel_background_service_channel"
 
+    const val NOTIFICATION_ID_BACKGROUND_SERVICE = 10001
     private const val NOTIFICATION_ID_CHECKIN_BASE = 20000
     private const val NOTIFICATION_ID_MAINTENANCE_BASE = 30000
     private const val NOTIFICATION_ID_SYSTEM_BASE = 40000
     private const val NOTIFICATION_ID_INVENTORY_BASE = 50000
+    private const val NOTIFICATION_ID_TIMERS_BASE = 60000
 
     /**
      * Checks whether the application has granted POST_NOTIFICATIONS permission.
@@ -97,8 +101,31 @@ object HotelNotificationHelper {
                 enableLights(true)
             }
 
+            // 5. Room Timers & Expiration Alerts Channel (High Priority with Sound and Vibration)
+            val timersChannel = NotificationChannel(
+                CHANNEL_ROOM_TIMERS,
+                "Temporizadores y Alertas de Tiempo",
+                NotificationManager.IMPORTANCE_HIGH
+            ).apply {
+                description = "Avisos de 15 minutos restantes y alertas de tiempo cumplido en habitaciones"
+                enableVibration(true)
+                enableLights(true)
+                setBypassDnd(true)
+                lockscreenVisibility = android.app.Notification.VISIBILITY_PUBLIC
+            }
+
+            // 6. Persistent Background Service Channel
+            val backgroundChannel = NotificationChannel(
+                CHANNEL_BACKGROUND_SERVICE,
+                "Servicio en Segundo Plano",
+                NotificationManager.IMPORTANCE_LOW
+            ).apply {
+                description = "Monitoreo continuo de habitaciones y temporizadores cuando la aplicación está en segundo plano"
+                setShowBadge(false)
+            }
+
             notificationManager.createNotificationChannels(
-                listOf(checkInChannel, maintenanceChannel, systemChannel, inventoryChannel)
+                listOf(checkInChannel, maintenanceChannel, systemChannel, inventoryChannel, timersChannel, backgroundChannel)
             )
         }
     }
@@ -340,6 +367,141 @@ object HotelNotificationHelper {
             notificationManager.notify(notificationId, builder.build())
         } catch (e: SecurityException) {
             e.printStackTrace()
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+    }
+
+    /**
+     * Builds the persistent ongoing Foreground Service notification.
+     */
+    fun buildForegroundServiceNotification(
+        context: Context,
+        occupiedRoomsCount: Int,
+        totalRoomsCount: Int = 10
+    ): android.app.Notification {
+        createNotificationChannels(context)
+
+        val intent = Intent(context, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+        }
+        val pendingIntent = PendingIntent.getActivity(
+            context,
+            NOTIFICATION_ID_BACKGROUND_SERVICE,
+            intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+        val contentTitle = "🏨 Hotel Rivera • Servicio en Segundo Plano"
+        val contentText = if (occupiedRoomsCount > 0) {
+            "$occupiedRoomsCount de $totalRoomsCount habitaciones ocupadas • Monitoreo de tiempo activo"
+        } else {
+            "Monitoreo de temporizadores y reservaciones activo"
+        }
+
+        return NotificationCompat.Builder(context, CHANNEL_BACKGROUND_SERVICE)
+            .setSmallIcon(android.R.drawable.stat_notify_sync)
+            .setContentTitle(contentTitle)
+            .setContentText(contentText)
+            .setPriority(NotificationCompat.PRIORITY_LOW)
+            .setOngoing(true)
+            .setContentIntent(pendingIntent)
+            .setCategory(NotificationCompat.CATEGORY_SERVICE)
+            .build()
+    }
+
+    /**
+     * Dispatches a high-priority 15-minute remaining warning alert for an occupied room.
+     */
+    @SuppressLint("MissingPermission")
+    fun sendRoom15MinWarningAlert(
+        context: Context,
+        roomNumber: String,
+        guestName: String,
+        remainingMinutes: Int = 15
+    ) {
+        if (!hasNotificationPermission(context)) return
+        createNotificationChannels(context)
+
+        val intent = Intent(context, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+        }
+        val pendingIntent = PendingIntent.getActivity(
+            context,
+            NOTIFICATION_ID_TIMERS_BASE + 100 + (roomNumber.toIntOrNull() ?: 1),
+            intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+        val builder = NotificationCompat.Builder(context, CHANNEL_ROOM_TIMERS)
+            .setSmallIcon(android.R.drawable.stat_sys_warning)
+            .setContentTitle("⏰ ¡Alerta 15 Minutos! Habitación $roomNumber")
+            .setContentText("El tiempo del huésped $guestName está por finalizar (${remainingMinutes} min restantes).")
+            .setStyle(
+                NotificationCompat.BigTextStyle().bigText(
+                    "¡Atención Recepción!\n" +
+                            "La Habitación $roomNumber ($guestName) tiene menos de 15 minutos de estancia restante.\n" +
+                            "Por favor contactar al huésped para consulta de extensión o preparación de salida."
+                )
+            )
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setCategory(NotificationCompat.CATEGORY_ALARM)
+            .setVibrate(longArrayOf(0, 500, 200, 500))
+            .setAutoCancel(true)
+            .setContentIntent(pendingIntent)
+
+        try {
+            val notificationManager = NotificationManagerCompat.from(context)
+            val notificationId = NOTIFICATION_ID_TIMERS_BASE + 100 + (roomNumber.toIntOrNull() ?: 1)
+            notificationManager.notify(notificationId, builder.build())
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+    }
+
+    /**
+     * Dispatches a high-priority alarm notification when a room's contracted time has expired.
+     */
+    @SuppressLint("MissingPermission")
+    fun sendRoomTimeEndedAlert(
+        context: Context,
+        roomNumber: String,
+        guestName: String
+    ) {
+        if (!hasNotificationPermission(context)) return
+        createNotificationChannels(context)
+
+        val intent = Intent(context, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+        }
+        val pendingIntent = PendingIntent.getActivity(
+            context,
+            NOTIFICATION_ID_TIMERS_BASE + 200 + (roomNumber.toIntOrNull() ?: 1),
+            intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+        val builder = NotificationCompat.Builder(context, CHANNEL_ROOM_TIMERS)
+            .setSmallIcon(android.R.drawable.stat_notify_error)
+            .setContentTitle("🚨 ¡TIEMPO CUMPLIDO! Habitación $roomNumber")
+            .setContentText("El tiempo de estancia para $guestName ha concluido.")
+            .setStyle(
+                NotificationCompat.BigTextStyle().bigText(
+                    "¡TIEMPO CONCLUIDO!\n" +
+                            "El período contratado en la Habitación $roomNumber para $guestName ha finalizado.\n" +
+                            "Se requiere proceder con el cobro / Check-Out o cobro de tiempo adicional."
+                )
+            )
+            .setPriority(NotificationCompat.PRIORITY_MAX)
+            .setCategory(NotificationCompat.CATEGORY_ALARM)
+            .setVibrate(longArrayOf(0, 800, 300, 800, 300, 800))
+            .setAutoCancel(true)
+            .setContentIntent(pendingIntent)
+
+        try {
+            val notificationManager = NotificationManagerCompat.from(context)
+            val notificationId = NOTIFICATION_ID_TIMERS_BASE + 200 + (roomNumber.toIntOrNull() ?: 1)
+            notificationManager.notify(notificationId, builder.build())
         } catch (e: Exception) {
             e.printStackTrace()
         }

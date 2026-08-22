@@ -57,6 +57,9 @@ import com.example.data.entities.RoomEntity
 import com.example.data.entities.RoomStatus
 import com.example.data.entities.TimeRateEntity
 import com.example.ui.HotelViewModel
+import androidx.compose.material.icons.filled.PersonAdd
+import androidx.compose.material3.FilterChip
+import java.util.Locale
 import com.example.ui.theme.HotelGold
 import com.example.ui.theme.HotelNavy
 import com.example.ui.theme.StatusGreen
@@ -155,6 +158,7 @@ fun GuestCheckInScreen(
                             nameError = null
                         },
                         label = { Text("Nombre Completo *") },
+                        placeholder = { Text("Ej. Juan Pérez o Clientes Varios") },
                         leadingIcon = { Icon(Icons.Default.Person, contentDescription = null) },
                         isError = nameError != null,
                         supportingText = nameError?.let { { Text(it, color = MaterialTheme.colorScheme.error) } },
@@ -163,13 +167,46 @@ fun GuestCheckInScreen(
                         shape = RoundedCornerShape(12.dp)
                     )
 
+                    // Quick Selection Chips for Clientes Varios
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = "Opción rápida:",
+                            style = MaterialTheme.typography.labelSmall,
+                            fontSize = 11.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        FilterChip(
+                            selected = fullName == "Clientes Varios",
+                            onClick = {
+                                fullName = "Clientes Varios"
+                                nameError = null
+                            },
+                            label = { Text("Clientes Varios", fontSize = 11.sp, fontWeight = FontWeight.Medium) },
+                            leadingIcon = {
+                                Icon(Icons.Default.PersonAdd, contentDescription = null, modifier = Modifier.height(14.dp))
+                            }
+                        )
+                        FilterChip(
+                            selected = fullName == "Consumidor Final",
+                            onClick = {
+                                fullName = "Consumidor Final"
+                                nameError = null
+                            },
+                            label = { Text("C/F", fontSize = 11.sp, fontWeight = FontWeight.Medium) }
+                        )
+                    }
+
                     OutlinedTextField(
                         value = documentId,
                         onValueChange = {
                             documentId = it
                             documentError = null
                         },
-                        label = { Text("DPI / Pasaporte *") },
+                        label = { Text("DPI / Pasaporte (Opcional)") },
                         leadingIcon = { Icon(Icons.Default.Badge, contentDescription = null) },
                         isError = documentError != null,
                         supportingText = documentError?.let { { Text(it, color = MaterialTheme.colorScheme.error) } },
@@ -184,7 +221,7 @@ fun GuestCheckInScreen(
                             phone = it
                             phoneError = null
                         },
-                        label = { Text("Teléfono de Contacto *") },
+                        label = { Text("Teléfono de Contacto (Opcional)") },
                         leadingIcon = { Icon(Icons.Default.Phone, contentDescription = null) },
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone),
                         isError = phoneError != null,
@@ -338,7 +375,7 @@ fun GuestCheckInScreen(
                         Text("Habitación $selectedRoomNumber ($stayNights n.)", fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
                     }
                     Text(
-                        text = "Q${String.format("%.2f", totalStayPrice)}",
+                        text = "Q${String.format(Locale.US, "%.2f", totalStayPrice)}",
                         fontSize = 22.sp,
                         fontWeight = FontWeight.ExtraBold,
                         color = HotelGold
@@ -353,14 +390,6 @@ fun GuestCheckInScreen(
                     var hasError = false
                     if (fullName.isBlank()) {
                         nameError = "El nombre del huésped es obligatorio."
-                        hasError = true
-                    }
-                    if (documentId.isBlank()) {
-                        documentError = "El documento DPI/Pasaporte es obligatorio."
-                        hasError = true
-                    }
-                    if (phone.isBlank()) {
-                        phoneError = "El teléfono de contacto es obligatorio."
                         hasError = true
                     }
                     if (selectedRoom == null) {
@@ -383,8 +412,8 @@ fun GuestCheckInScreen(
 
                         viewModel.checkInRoom(
                             roomId = selectedRoom.id,
-                            clientName = fullName,
-                            clientDpi = documentId,
+                            clientName = fullName.trim(),
+                            clientDpi = documentId.trim().ifBlank { null },
                             guestCount = adultsCount,
                             rate = customRate,
                             notes = extraNotes

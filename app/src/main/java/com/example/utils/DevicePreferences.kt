@@ -25,6 +25,14 @@ object DevicePreferences {
         return getPrefs(context).getBoolean(KEY_IS_LINKED, false)
     }
 
+    fun isDeviceAuthorized(context: Context): Boolean {
+        return isDeviceLinked(context)
+    }
+
+    fun setDeviceAuthorized(context: Context, authorized: Boolean) {
+        getPrefs(context).edit().putBoolean(KEY_IS_LINKED, authorized).apply()
+    }
+
     /**
      * Returns the currently linked device ID or generates a default local ID.
      */

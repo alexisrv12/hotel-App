@@ -312,7 +312,10 @@ fun FinancialOverviewScreen(
                     stayHistory = stayHistory,
                     invoices = invoices,
                     saleRecords = saleRecords,
-                    totalRoomsCount = rooms.size.coerceAtLeast(1)
+                    totalRoomsCount = rooms.size.coerceAtLeast(1),
+                    onResetMetrics = {
+                        viewModel.resetOccupancyAndRevenueMetrics()
+                    }
                 )
             }
 

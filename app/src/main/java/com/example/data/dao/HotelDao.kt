@@ -12,6 +12,7 @@ import com.example.data.entities.InvoiceEntity
 import com.example.data.entities.MaintenanceRequestEntity
 import com.example.data.entities.AuditLogEntity
 import com.example.data.entities.ProductEntity
+import com.example.data.entities.ReservationEntity
 import com.example.data.entities.RoomEntity
 import com.example.data.entities.SaleRecordEntity
 import com.example.data.entities.StayHistoryEntity
@@ -104,6 +105,9 @@ interface HotelDao {
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertSaleRecord(record: SaleRecordEntity): Long
+
+    @Query("DELETE FROM sale_records")
+    suspend fun deleteAllSaleRecords()
 
     // --- STAY HISTORY ---
     @Query("SELECT * FROM stay_history ORDER BY checkOutTimeMillis DESC")
@@ -210,4 +214,29 @@ interface HotelDao {
 
     @Query("DELETE FROM maintenance_requests WHERE id = :id")
     suspend fun deleteMaintenanceRequestById(id: Long)
+
+    // --- RESERVATIONS ---
+    @Query("SELECT * FROM reservations ORDER BY reservationDateMillis ASC, id ASC")
+    fun getAllReservations(): Flow<List<ReservationEntity>>
+
+    @Query("SELECT * FROM reservations WHERE status != 'CANCELADA' ORDER BY reservationDateMillis ASC")
+    fun getActiveReservations(): Flow<List<ReservationEntity>>
+
+    @Query("SELECT * FROM reservations WHERE checkInDateString = :dateString AND status != 'CANCELADA' ORDER BY checkInTime ASC")
+    fun getReservationsByDate(dateString: String): Flow<List<ReservationEntity>>
+
+    @Query("SELECT * FROM reservations WHERE id = :id")
+    suspend fun getReservationById(id: Long): ReservationEntity?
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertReservation(reservation: ReservationEntity): Long
+
+    @Update
+    suspend fun updateReservation(reservation: ReservationEntity)
+
+    @Query("DELETE FROM reservations WHERE id = :id")
+    suspend fun deleteReservationById(id: Long)
+
+    @Query("DELETE FROM reservations")
+    suspend fun deleteAllReservations()
 }
