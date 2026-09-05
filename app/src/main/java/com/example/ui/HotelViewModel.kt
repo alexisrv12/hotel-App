@@ -1202,14 +1202,16 @@ class HotelViewModel(application: Application) : AndroidViewModel(application) {
 
                 docRef.set(tokenConId)
                     .addOnSuccessListener {
-                        Log.i("HotelViewModel", "Token de vinculación guardado en Firestore: ${docRef.id} [PIN: $nuevoPin]")
+                        Log.d("HotelViewModel", "Token de vinculación guardado en Firestore: ${docRef.id}")
+                        // Actualizar UI SOLO si fue exitoso
+                        _tokenVinculacion.value = tokenConId
+                        _estadoVinculacion.value = "Vinculación Exitosa" 
                     }
                     .addOnFailureListener { e ->
-                        Log.e("HotelViewModel", "Error al guardar token de vinculación en Firestore: ${e.message}", e)
+                        Log.e("HotelViewModel", "Error al guardar token: ${e.message}", e)
+                        // MOSTRAR EL ERROR REAL EN PANTALLA
+                        _estadoVinculacion.value = "Error Firebase: ${e.localizedMessage}"
                     }
-
-                _tokenVinculacion.value = tokenConId
-                _estadoVinculacion.value = "Token generado correctamente"
             } catch (e: Exception) {
                 Log.e("HotelViewModel", "Error al generar token de vinculación: ${e.message}", e)
                 _estadoVinculacion.value = "Error al generar token: ${e.message}"
