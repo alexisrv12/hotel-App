@@ -1,0 +1,48 @@
+{
+  "project_info": {
+    "project_number": "571595793156",
+    "project_id": "manager-hotel-r",
+    "storage_bucket": "manager-hotel-r.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:571595793156:android:d59304a53ceea8138d2651",
+        "android_client_info": {
+          "package_name": "com.aistudio.hotelrivera.app"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAl18319cmBD2io7hCs9vlP1o9jXgM0PVQ"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    },
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:571595793156:android:dcdffa89a1226e388d2651",
+        "android_client_info": {
+          "package_name": "com.example"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAl18319cmBD2io7hCs9vlP1o9jXgM0PVQ"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
