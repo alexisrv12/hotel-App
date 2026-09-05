@@ -16,7 +16,6 @@ import com.example.data.entities.HotelSettingEntity
 import com.example.data.entities.InvoiceEntity
 import com.example.data.entities.MaintenanceRequestEntity
 import com.example.data.entities.ProductEntity
-import com.example.data.entities.ReservationEntity
 import com.example.data.entities.RoomEntity
 import com.example.data.entities.RoomStatus
 import com.example.data.entities.SaleRecordEntity
@@ -44,10 +43,9 @@ import kotlinx.coroutines.launch
         DeviceEntity::class,
         HousekeepingTaskEntity::class,
         MaintenanceRequestEntity::class,
-        SharedAppStateBackupEntity::class,
-        ReservationEntity::class
+        SharedAppStateBackupEntity::class
     ],
-    version = 9,
+    version = 8,
     exportSchema = false
 )
 abstract class HotelDatabase : RoomDatabase() {
@@ -68,7 +66,7 @@ abstract class HotelDatabase : RoomDatabase() {
                     HotelDatabase::class.java,
                     "hotel_rivera_db"
                 )
-                    .fallbackToDestructiveMigration(dropAllTables = true)
+                    .fallbackToDestructiveMigration()
                     .addCallback(HotelDatabaseCallback(scope))
                     .build()
                 INSTANCE = instance

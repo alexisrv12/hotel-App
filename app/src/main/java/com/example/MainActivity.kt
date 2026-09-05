@@ -165,10 +165,7 @@ fun HotelRiveraApp(viewModel: HotelViewModel) {
 
             Screen.LINK_DEVICE -> {
                 LinkDeviceScreen(
-                    onBackToLogin = { viewModel.navigateTo(Screen.LOGIN) },
-                    onNavigateToReception = { targetScreen ->
-                        viewModel.navigateTo(targetScreen)
-                    }
+                    onBackToLogin = { viewModel.navigateTo(Screen.LOGIN) }
                 )
             }
 

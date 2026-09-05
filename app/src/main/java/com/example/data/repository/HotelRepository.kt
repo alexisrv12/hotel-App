@@ -7,7 +7,6 @@ import com.example.data.entities.HotelSettingEntity
 import com.example.data.entities.InvoiceEntity
 import com.example.data.entities.MaintenanceRequestEntity
 import com.example.data.entities.ProductEntity
-import com.example.data.entities.ReservationEntity
 import com.example.data.entities.RoomEntity
 import com.example.data.entities.RoomStatus
 import com.example.data.entities.SaleRecordEntity
@@ -21,12 +20,9 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
-class HotelRepository(
-    private val dao: HotelDao,
-    private val firestoreRepo: HotelFirestoreRepository? = null
-) {
+class HotelRepository(private val dao: HotelDao) {
 
-    val allRooms: Flow<List<RoomEntity>> = firestoreRepo?.getRoomsFlow() ?: dao.getAllRooms()
+    val allRooms: Flow<List<RoomEntity>> = dao.getAllRooms()
     val allTimeRates: Flow<List<TimeRateEntity>> = dao.getAllTimeRates()
     val activeTimeRates: Flow<List<TimeRateEntity>> = dao.getActiveTimeRates()
     val allSupplies: Flow<List<SupplyEntity>> = dao.getAllSupplies()
@@ -40,8 +36,6 @@ class HotelRepository(
     val allHousekeepingTasks: Flow<List<HousekeepingTaskEntity>> = dao.getAllHousekeepingTasks()
     val allMaintenanceRequests: Flow<List<MaintenanceRequestEntity>> = dao.getAllMaintenanceRequests()
     val activeMaintenanceRequests: Flow<List<MaintenanceRequestEntity>> = dao.getActiveMaintenanceRequests()
-    val allReservations: Flow<List<ReservationEntity>> = dao.getAllReservations()
-    val activeReservations: Flow<List<ReservationEntity>> = dao.getActiveReservations()
 
     // --- AUDIT LOGGING ---
     suspend fun logAudit(username: String, action: String, details: String) {
@@ -90,7 +84,6 @@ class HotelRepository(
             notes = notes
         )
         dao.updateRoom(updatedRoom)
-        firestoreRepo?.syncRoomUpdate(updatedRoom)
         logAudit(
             username = receptionistName,
             action = "ENTRADA_HABITACION",
@@ -110,7 +103,6 @@ class HotelRepository(
             priceCharged = newTotalPrice
         )
         dao.updateRoom(updatedRoom)
-        firestoreRepo?.syncRoomUpdate(updatedRoom)
     }
 
     suspend fun finishStay(
@@ -170,7 +162,6 @@ class HotelRepository(
             cleaningStartTimeMillis = 0L
         )
         dao.updateRoom(updatedRoom)
-        firestoreRepo?.syncRoomUpdate(updatedRoom)
         logAudit(
             username = receptionistName,
             action = "SALIDA_HABITACION",
@@ -188,13 +179,9 @@ class HotelRepository(
             cleaningFinishedBy = if (newStatus == RoomStatus.DISPONIBLE) receptionistName else room.cleaningFinishedBy
         )
         dao.updateRoom(updatedRoom)
-        firestoreRepo?.syncRoomUpdate(updatedRoom)
     }
 
-    suspend fun updateRoomDetails(room: RoomEntity) {
-        dao.updateRoom(room)
-        firestoreRepo?.syncRoomUpdate(room)
-    }
+    suspend fun updateRoomDetails(room: RoomEntity) = dao.updateRoom(room)
 
     suspend fun addRoom(roomNumber: String) {
         val count = dao.getRoomsCount()
@@ -204,16 +191,9 @@ class HotelRepository(
             sortOrder = count + 1
         )
         dao.insertRoom(newRoom)
-        firestoreRepo?.syncRoomUpdate(newRoom)
     }
 
-    suspend fun deleteRoom(id: Long) {
-        val room = dao.getRoomById(id)
-        dao.deleteRoomById(id)
-        if (room != null) {
-            firestoreRepo?.syncRoomDelete(room.roomNumber)
-        }
-    }
+    suspend fun deleteRoom(id: Long) = dao.deleteRoomById(id)
 
     suspend fun setTotalRooms(totalCount: Int) {
         val currentRooms = dao.getAllRooms().first()
@@ -222,76 +202,55 @@ class HotelRepository(
             var maxNum = currentRooms.mapNotNull { it.roomNumber.toIntOrNull() }.maxOrNull() ?: 0
             for (i in 1..toAdd) {
                 maxNum++
-                val newRoom = RoomEntity(
-                    roomNumber = maxNum.toString(),
-                    status = RoomStatus.DISPONIBLE,
-                    sortOrder = currentRooms.size + i
+                dao.insertRoom(
+                    RoomEntity(
+                        roomNumber = maxNum.toString(),
+                        status = RoomStatus.DISPONIBLE,
+                        sortOrder = currentRooms.size + i
+                    )
                 )
-                dao.insertRoom(newRoom)
-                firestoreRepo?.syncRoomUpdate(newRoom)
             }
         } else if (currentRooms.size > totalCount) {
             // Delete extra available rooms from the bottom
             val excessCount = currentRooms.size - totalCount
             val removable = currentRooms.filter { it.status == RoomStatus.DISPONIBLE }.takeLast(excessCount)
-            removable.forEach {
-                dao.deleteRoomById(it.id)
-                firestoreRepo?.syncRoomDelete(it.roomNumber)
-            }
+            removable.forEach { dao.deleteRoomById(it.id) }
         }
         saveSetting("total_rooms", totalCount.toString())
     }
 
     // --- RATES OPERATIONS ---
     suspend fun saveTimeRate(rate: TimeRateEntity) {
-        val id = if (rate.id == 0L) {
+        if (rate.id == 0L) {
             dao.insertTimeRate(rate)
         } else {
             dao.updateTimeRate(rate)
-            rate.id
         }
-        val syncedRate = rate.copy(id = if (rate.id == 0L) id else rate.id)
-        firestoreRepo?.syncTimeRate(syncedRate)
     }
 
-    suspend fun deleteTimeRate(id: Long) {
-        dao.deleteTimeRateById(id)
-        firestoreRepo?.syncTimeRateDelete(id)
-    }
+    suspend fun deleteTimeRate(id: Long) = dao.deleteTimeRateById(id)
 
     // --- SUPPLIES OPERATIONS ---
     suspend fun saveSupply(supply: SupplyEntity) {
-        val id = if (supply.id == 0L) {
+        if (supply.id == 0L) {
             dao.insertSupply(supply)
         } else {
             dao.updateSupply(supply)
-            supply.id
         }
-        val syncedSupply = supply.copy(id = if (supply.id == 0L) id else supply.id)
-        firestoreRepo?.syncSupply(syncedSupply)
     }
 
-    suspend fun deleteSupply(id: Long) {
-        dao.deleteSupplyById(id)
-        firestoreRepo?.syncSupplyDelete(id)
-    }
+    suspend fun deleteSupply(id: Long) = dao.deleteSupplyById(id)
 
     // --- PRODUCTS & EXTRA SALES OPERATIONS ---
     suspend fun saveProduct(product: ProductEntity) {
-        val id = if (product.id == 0L) {
+        if (product.id == 0L) {
             dao.insertProduct(product)
         } else {
             dao.updateProduct(product)
-            product.id
         }
-        val syncedProduct = product.copy(id = if (product.id == 0L) id else product.id)
-        firestoreRepo?.syncProduct(syncedProduct)
     }
 
-    suspend fun deleteProduct(id: Long) {
-        dao.deleteProductById(id)
-        firestoreRepo?.syncProductDelete(id)
-    }
+    suspend fun deleteProduct(id: Long) = dao.deleteProductById(id)
 
     suspend fun registerSale(productId: Long, quantity: Int, receptionistName: String, paymentMethod: String) {
         val products = dao.getAllProducts().first()
@@ -310,14 +269,11 @@ class HotelRepository(
             registeredBy = receptionistName,
             paymentMethod = paymentMethod
         )
-        val saleId = dao.insertSaleRecord(record)
-        firestoreRepo?.syncSaleRecord(record.copy(id = saleId))
+        dao.insertSaleRecord(record)
 
         // Update product stock
         val newStock = maxOf(0, product.stock - quantity)
-        val updatedProduct = product.copy(stock = newStock)
-        dao.updateProduct(updatedProduct)
-        firestoreRepo?.syncProduct(updatedProduct)
+        dao.updateProduct(product.copy(stock = newStock))
     }
 
     // --- USERS OPERATIONS ---
@@ -336,7 +292,6 @@ class HotelRepository(
     // --- SETTINGS OPERATIONS ---
     suspend fun saveSetting(key: String, value: String) {
         dao.insertSetting(HotelSettingEntity(key, value))
-        firestoreRepo?.syncSetting(key, value)
     }
 
     suspend fun getSetting(key: String, default: String): String {
@@ -344,21 +299,7 @@ class HotelRepository(
     }
 
     // --- HISTORY OPERATIONS ---
-    suspend fun deleteHistoryItem(id: Long) {
-        dao.deleteStayHistoryById(id)
-        firestoreRepo?.syncStayHistoryDelete(id)
-    }
-
-    suspend fun resetAllMetricsHistory() {
-        dao.deleteAllStayHistory()
-        dao.deleteAllInvoices()
-        dao.deleteAllSaleRecords()
-        logAudit(
-            username = "Gerencia",
-            action = "REINICIAR_METRICAS",
-            details = "Se restablecieron las métricas de ocupación e ingresos para iniciar desde cero."
-        )
-    }
+    suspend fun deleteHistoryItem(id: Long) = dao.deleteStayHistoryById(id)
 
     // --- INVOICE OPERATIONS ---
     suspend fun createInvoice(
@@ -414,19 +355,16 @@ class HotelRepository(
         )
 
         val id = dao.insertInvoice(invoice)
-        val created = invoice.copy(id = id)
-        firestoreRepo?.syncInvoice(created)
         logAudit(
             username = receptionistName,
             action = "GENERAR_FACTURA",
             details = "Factura $invoiceNum creada para ${invoice.clientName} (Hab. $roomNumber). Total: Q${String.format(Locale.US, "%.2f", totalAmount)}"
         )
-        return created
+        return invoice.copy(id = id)
     }
 
     suspend fun saveInvoice(invoice: InvoiceEntity): Long {
         val id = dao.insertInvoice(invoice)
-        firestoreRepo?.syncInvoice(invoice.copy(id = id))
         logAudit(
             username = invoice.receptionistName ?: "Recepción",
             action = "INSERTAR_FACTURA",
@@ -443,7 +381,6 @@ class HotelRepository(
             voidReason = reason
         )
         dao.updateInvoice(updated)
-        firestoreRepo?.syncInvoice(updated)
         logAudit(
             username = managerUsername,
             action = "ANULAR_FACTURA",
@@ -451,16 +388,11 @@ class HotelRepository(
         )
     }
 
-    suspend fun deleteInvoice(id: Long) {
-        dao.deleteInvoiceById(id)
-        firestoreRepo?.syncInvoiceDelete(id)
-    }
+    suspend fun deleteInvoice(id: Long) = dao.deleteInvoiceById(id)
 
     // --- HOUSEKEEPING OPERATIONS ---
     suspend fun insertHousekeepingTask(task: HousekeepingTaskEntity): Long {
         val id = dao.insertHousekeepingTask(task)
-        val synced = task.copy(id = id)
-        firestoreRepo?.syncHousekeepingTask(synced)
         logAudit(
             username = task.assignedBy,
             action = "ASIGNAR_LIMPIEZA",
@@ -471,7 +403,6 @@ class HotelRepository(
 
     suspend fun updateHousekeepingTask(task: HousekeepingTaskEntity) {
         dao.updateHousekeepingTask(task)
-        firestoreRepo?.syncHousekeepingTask(task)
         logAudit(
             username = task.assignedStaffName,
             action = "ACTUALIZAR_LIMPIEZA",
@@ -479,16 +410,11 @@ class HotelRepository(
         )
     }
 
-    suspend fun deleteHousekeepingTask(id: Long) {
-        dao.deleteHousekeepingTaskById(id)
-        firestoreRepo?.syncHousekeepingTaskDelete(id)
-    }
+    suspend fun deleteHousekeepingTask(id: Long) = dao.deleteHousekeepingTaskById(id)
 
     // --- MAINTENANCE & BROKEN ITEMS OPERATIONS ---
     suspend fun insertMaintenanceRequest(request: MaintenanceRequestEntity): Long {
         val id = dao.insertMaintenanceRequest(request)
-        val synced = request.copy(id = id)
-        firestoreRepo?.syncMaintenanceRequest(synced)
         logAudit(
             username = request.reportedBy,
             action = "REPORTE_MANTENIMIENTO",
@@ -499,7 +425,6 @@ class HotelRepository(
 
     suspend fun updateMaintenanceRequest(request: MaintenanceRequestEntity) {
         dao.updateMaintenanceRequest(request)
-        firestoreRepo?.syncMaintenanceRequest(request)
         logAudit(
             username = request.assignedTechnician ?: request.reportedBy,
             action = "ACTUALIZAR_MANTENIMIENTO",
@@ -509,57 +434,10 @@ class HotelRepository(
 
     suspend fun deleteMaintenanceRequest(id: Long, managerUsername: String = "Gerencia") {
         dao.deleteMaintenanceRequestById(id)
-        firestoreRepo?.syncMaintenanceRequestDelete(id)
         logAudit(
             username = managerUsername,
             action = "ELIMINAR_MANTENIMIENTO",
             details = "Ticket de mantenimiento #$id eliminado del sistema"
         )
-    }
-
-    // --- RESERVATION OPERATIONS ---
-    fun getReservationsByDate(dateString: String): Flow<List<ReservationEntity>> {
-        return dao.getReservationsByDate(dateString)
-    }
-
-    suspend fun insertReservation(reservation: ReservationEntity, staffName: String = "Recepción"): Long {
-        val id = dao.insertReservation(reservation)
-        val synced = reservation.copy(id = id)
-        firestoreRepo?.syncReservation(synced)
-        logAudit(
-            username = staffName,
-            action = "NUEVA_RESERVACION",
-            details = "Reserva registrada para Hab. ${reservation.roomNumber} - Huésped: ${reservation.clientName} (Fecha: ${reservation.checkInDateString} ${reservation.checkInTime})"
-        )
-        return id
-    }
-
-    suspend fun updateReservation(reservation: ReservationEntity, staffName: String = "Recepción") {
-        dao.updateReservation(reservation)
-        firestoreRepo?.syncReservation(reservation)
-        logAudit(
-            username = staffName,
-            action = "ACTUALIZAR_RESERVA",
-            details = "Reserva #${reservation.id} actualizada para Hab. ${reservation.roomNumber} - Estado: ${reservation.status}"
-        )
-    }
-
-    suspend fun cancelReservation(id: Long, staffName: String = "Recepción") {
-        val res = dao.getReservationById(id)
-        if (res != null) {
-            val updated = res.copy(status = "CANCELADA")
-            dao.updateReservation(updated)
-            firestoreRepo?.syncReservation(updated)
-            logAudit(
-                username = staffName,
-                action = "CANCELAR_RESERVA",
-                details = "Reserva #${id} de ${res.clientName} para Hab. ${res.roomNumber} fue cancelada"
-            )
-        }
-    }
-
-    suspend fun deleteReservation(id: Long) {
-        dao.deleteReservationById(id)
-        firestoreRepo?.syncReservationDelete(id)
     }
 }

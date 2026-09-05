@@ -7,8 +7,6 @@ import com.example.data.dao.RoomDao
 import com.example.data.database.HotelDatabase
 import com.example.data.entities.RoomEntity
 import com.example.data.entities.RoomStatus
-import com.example.data.repository.HotelFirestoreRepository
-import com.example.data.repository.SessionDataStoreRepository
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -18,28 +16,19 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
 /**
- * ViewModel managing guest check-ins and room status transitions in Room database with Firestore real-time sync.
+ * ViewModel managing guest check-ins and room status transitions in Room database.
  */
 class GuestCheckInViewModel @JvmOverloads constructor(
     application: Application,
     private val roomDao: RoomDao = HotelDatabase.getDatabase(application).roomDao()
 ) : AndroidViewModel(application) {
 
-    private val db = HotelDatabase.getDatabase(application)
-    private val sessionRepo = SessionDataStoreRepository(application)
-    private val firestoreRepo = HotelFirestoreRepository.getInstance(
-        application.applicationContext,
-        db.hotelDao(),
-        db.deviceDao(),
-        sessionRepo
-    )
-
     // Status filter: "ALL", "DISPONIBLE", "OCUPADA", "PENDIENTE_LIMPIEZA"
     private val _selectedFilter = MutableStateFlow("ALL")
     val selectedFilter: StateFlow<String> = _selectedFilter.asStateFlow()
 
-    // All rooms Flow directly from Firestore in real-time
-    val allRooms: StateFlow<List<RoomEntity>> = firestoreRepo.getRoomsFlow().stateIn(
+    // All rooms Flow from Room DB
+    val allRooms: StateFlow<List<RoomEntity>> = roomDao.getAllRooms().stateIn(
         scope = viewModelScope,
         started = SharingStarted.WhileSubscribed(5000),
         initialValue = emptyList()
@@ -69,7 +58,7 @@ class GuestCheckInViewModel @JvmOverloads constructor(
     }
 
     /**
-     * Executes check-in, transitioning a room's status from 'Available' (DISPONIBLE) to 'Occupied' (OCUPADA) and syncing in real-time.
+     * Executes check-in, transitioning a room's status from 'Available' (DISPONIBLE) to 'Occupied' (OCUPADA) in the Room database.
      */
     fun checkInGuest(
         roomId: Long,
@@ -112,7 +101,6 @@ class GuestCheckInViewModel @JvmOverloads constructor(
             )
 
             roomDao.updateRoom(updatedRoom)
-            firestoreRepo.syncRoomUpdate(updatedRoom)
             _userMessage.value = "¡Check-In exitoso en Habitación ${existingRoom.roomNumber}! Estado actualizado a Ocupada."
         }
     }
@@ -128,7 +116,6 @@ class GuestCheckInViewModel @JvmOverloads constructor(
                 cleaningStartTimeMillis = System.currentTimeMillis()
             )
             roomDao.updateRoom(updated)
-            firestoreRepo.syncRoomUpdate(updated)
             _userMessage.value = "Check-Out registrado para Habitación ${room.roomNumber}. Pasa a Limpieza."
         }
     }
@@ -147,13 +134,12 @@ class GuestCheckInViewModel @JvmOverloads constructor(
                 cleaningFinishedBy = finishedBy
             )
             roomDao.updateRoom(updated)
-            firestoreRepo.syncRoomUpdate(updated)
             _userMessage.value = "Habitación ${room.roomNumber} limpia y disponible nuevamente."
         }
     }
 
     /**
-     * Adds a new room to the database and syncs to Firestore.
+     * Adds a new room to the database.
      */
     fun addNewRoom(roomNumber: String, roomType: String = "Estándar", nightlyRate: Double = 150.0) {
         viewModelScope.launch {
@@ -165,7 +151,6 @@ class GuestCheckInViewModel @JvmOverloads constructor(
                 sortOrder = (allRooms.value.maxOfOrNull { it.sortOrder } ?: 0) + 1
             )
             roomDao.insertRoom(newRoom)
-            firestoreRepo.syncRoomUpdate(newRoom)
             _userMessage.value = "Habitación $roomNumber agregada con éxito."
         }
     }

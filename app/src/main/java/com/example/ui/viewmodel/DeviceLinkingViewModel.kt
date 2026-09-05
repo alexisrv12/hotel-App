@@ -9,9 +9,6 @@ import com.example.data.entities.DeviceConnectionStatus
 import com.example.data.entities.DeviceEntity
 import com.example.data.entities.RealTimeConnectivityStatus
 import com.example.data.repository.DeviceRepository
-import com.example.data.repository.CloudSyncStatus
-import com.example.data.repository.HotelFirestoreRepository
-import com.example.data.repository.SessionDataStoreRepository
 import com.example.utils.CodeValidationResult
 import com.example.utils.DeviceCodeValidationHelper
 import com.example.utils.DeviceDataStoreManager
@@ -22,9 +19,6 @@ import com.example.utils.DeviceLinkingUtils
 import com.example.utils.DeviceNotificationManager
 import com.example.utils.DevicePreferences
 import com.example.utils.PinValidationResult
-import com.example.utils.LocalNetworkManager
-import com.example.utils.WifiIpInfo
-import com.example.utils.DiscoveredLanDevice
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -32,19 +26,6 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
-
-enum class FirebaseConnectionState {
-    CONNECTED,
-    DISCONNECTED,
-    SYNCING
-}
-
-enum class PairingStatus {
-    IDLE,
-    PAIRING,
-    SUCCESS,
-    FAILED
-}
 
 /**
  * ViewModel managing state and operations for device linking workflow and local notifications.
@@ -59,26 +40,6 @@ class DeviceLinkingViewModel @JvmOverloads constructor(
     companion object {
         const val HEARTBEAT_TIMEOUT_MS = 30000L // 30s threshold for active connectivity
     }
-
-    private val hotelDao = HotelDatabase.getDatabase(application).hotelDao()
-    private val deviceDao = HotelDatabase.getDatabase(application).deviceDao()
-    private val sessionRepo = SessionDataStoreRepository(application)
-    private val firestoreRepo = HotelFirestoreRepository.getInstance(application, hotelDao, deviceDao, sessionRepo)
-
-    // Real-time Firebase Connection State (Connected, Disconnected, Syncing)
-    val firebaseConnectionState: StateFlow<FirebaseConnectionState> = firestoreRepo.syncInfo
-        .map { syncInfo ->
-            when (syncInfo.status) {
-                CloudSyncStatus.ONLINE_SYNCED -> FirebaseConnectionState.CONNECTED
-                CloudSyncStatus.SYNCING -> FirebaseConnectionState.SYNCING
-                CloudSyncStatus.OFFLINE -> FirebaseConnectionState.DISCONNECTED
-            }
-        }
-        .stateIn(
-            scope = viewModelScope,
-            started = SharingStarted.WhileSubscribed(5000),
-            initialValue = FirebaseConnectionState.CONNECTED
-        )
 
     // State Flow emitting list of linked devices from Room database
     val linkedDevices: StateFlow<List<DeviceEntity>> = repository.allDevices.stateIn(
@@ -132,18 +93,6 @@ class DeviceLinkingViewModel @JvmOverloads constructor(
 
     private val codeValidator = DeviceCodeValidationHelper.getInstance()
 
-    // Local Wi-Fi / LAN Network Manager
-    val localNetworkManager = LocalNetworkManager(application)
-    val wifiIpInfo: StateFlow<WifiIpInfo> = localNetworkManager.wifiIpInfo
-    val discoveredLanDevices: StateFlow<List<DiscoveredLanDevice>> = localNetworkManager.discoveredDevices
-    val isScanningLan: StateFlow<Boolean> = localNetworkManager.isScanning
-
-    private val _ipPingResult = MutableStateFlow<String?>(null)
-    val ipPingResult: StateFlow<String?> = _ipPingResult.asStateFlow()
-
-    private val _isConnectingIp = MutableStateFlow(false)
-    val isConnectingIp: StateFlow<Boolean> = _isConnectingIp.asStateFlow()
-
     // Current active 6-digit secure PIN for device pairing
     private val _currentPin = MutableStateFlow(DeviceLinkingUtility.generate6DigitPin())
     val currentPin: StateFlow<String> = _currentPin.asStateFlow()
@@ -175,34 +124,13 @@ class DeviceLinkingViewModel @JvmOverloads constructor(
     private val _pinValidationResult = MutableStateFlow<PinValidationResult?>(null)
     val pinValidationResult: StateFlow<PinValidationResult?> = _pinValidationResult.asStateFlow()
 
-    // Pairing workflow and failure states
-    private val _pairingStatus = MutableStateFlow(PairingStatus.IDLE)
-    val pairingStatus: StateFlow<PairingStatus> = _pairingStatus.asStateFlow()
-
-    private val _pairingErrorMessage = MutableStateFlow<String?>(null)
-    val pairingErrorMessage: StateFlow<String?> = _pairingErrorMessage.asStateFlow()
-
-    private val _hasPairingFailed = MutableStateFlow(false)
-    val hasPairingFailed: StateFlow<Boolean> = _hasPairingFailed.asStateFlow()
-
     // Feedback messages for UI operations
     private val _userMessage = MutableStateFlow<String?>(null)
     val userMessage: StateFlow<String?> = _userMessage.asStateFlow()
 
-    init {
-        // Handle incoming LAN/Wi-Fi pairing requests from other devices
-        localNetworkManager.onDevicePairingReceived = { lanDevice ->
-            viewModelScope.launch {
-                linkDevice(
-                    name = lanDevice.deviceName,
-                    userAssigned = lanDevice.role,
-                    deviceId = lanDevice.deviceId,
-                    ipAddress = lanDevice.ipAddress
-                )
-                _userMessage.value = "¡Dispositivo vinculado por Wi-Fi: ${lanDevice.deviceName} (${lanDevice.ipAddress})!"
-            }
-        }
+    private val hotelDao = HotelDatabase.getDatabase(application).hotelDao()
 
+    init {
         viewModelScope.launch {
             val now = System.currentTimeMillis()
             val dbPin = hotelDao.getSettingValue("active_linking_pin")
@@ -242,7 +170,7 @@ class DeviceLinkingViewModel @JvmOverloads constructor(
     }
 
     /**
-     * Generates a new 6-digit secure PIN for device pairing session and persists it in DB and Firestore.
+     * Generates a new 6-digit secure PIN for device pairing session and persists it in DB.
      */
     fun generateNewPin(): String {
         val pin = DeviceLinkingUtility.generate6DigitPin()
@@ -252,13 +180,12 @@ class DeviceLinkingViewModel @JvmOverloads constructor(
         viewModelScope.launch {
             hotelDao.insertSetting(com.example.data.entities.HotelSettingEntity("active_linking_pin", pin))
             hotelDao.insertSetting(com.example.data.entities.HotelSettingEntity("active_linking_pin_ts", now.toString()))
-            firestoreRepo.generateLinkingCode("RECEPCION", customPin = pin)
         }
         return pin
     }
 
     /**
-     * Generates a new Base64 temporary QR code session string token and persists it in DB and Firestore.
+     * Generates a new Base64 temporary QR code session string token and persists it in DB.
      */
     fun generateNewQrToken(deviceId: String = "DEV-" + (1000..9999).random()): String {
         val qrToken = linkingUtility.generateTemporarySessionQrString(deviceId)
@@ -268,7 +195,6 @@ class DeviceLinkingViewModel @JvmOverloads constructor(
         viewModelScope.launch {
             hotelDao.insertSetting(com.example.data.entities.HotelSettingEntity("active_linking_qr", qrToken))
             hotelDao.insertSetting(com.example.data.entities.HotelSettingEntity("active_linking_qr_ts", now.toString()))
-            firestoreRepo.generateLinkingCode("RECEPCION", customToken = qrToken)
         }
         return qrToken
     }
@@ -279,22 +205,6 @@ class DeviceLinkingViewModel @JvmOverloads constructor(
     fun validatePin(inputPin: String, expectedPin: String = _currentPin.value): PinValidationResult {
         val result = DeviceLinkingUtils.validatePinCode(inputPin, expectedPin)
         _pinValidationResult.value = result
-        when (result) {
-            is PinValidationResult.Valid -> {
-                _pairingStatus.value = PairingStatus.SUCCESS
-                _pairingErrorMessage.value = null
-                _hasPairingFailed.value = false
-            }
-            is PinValidationResult.IncorrectPin -> {
-                recordPairingFailure("El PIN ingresado es incorrecto. Verifique el código.")
-            }
-            is PinValidationResult.InvalidFormat -> {
-                recordPairingFailure("Formato de PIN inválido. Ingrese entre 4 y 8 dígitos.")
-            }
-            is PinValidationResult.RateLimited -> {
-                recordPairingFailure("Demasiados intentos fallidos. Espere ${result.remainingSeconds} segundos.")
-            }
-        }
         return result
     }
 
@@ -304,47 +214,7 @@ class DeviceLinkingViewModel @JvmOverloads constructor(
     fun decodeQrToken(token: String): String? {
         val decoded = linkingUtility.decodeTemporarySessionQrString(token)
         _decodedQrSessionPayload.value = decoded
-        if (decoded == null) {
-            recordPairingFailure("El código QR escaneado no es válido o ha expirado.")
-        } else {
-            _pairingStatus.value = PairingStatus.SUCCESS
-            _pairingErrorMessage.value = null
-            _hasPairingFailed.value = false
-        }
         return decoded
-    }
-
-    /**
-     * Records a pairing failure state with error explanation and user notification.
-     */
-    fun recordPairingFailure(reason: String) {
-        _pairingStatus.value = PairingStatus.FAILED
-        _pairingErrorMessage.value = reason
-        _hasPairingFailed.value = true
-        _userMessage.value = reason
-    }
-
-    /**
-     * Clears failure state without regenerating tokens.
-     */
-    fun clearPairingFailure() {
-        _pairingStatus.value = PairingStatus.IDLE
-        _pairingErrorMessage.value = null
-        _hasPairingFailed.value = false
-    }
-
-    /**
-     * Retries pairing by regenerating active QR code and PIN, and restarting pairing logic smoothly.
-     */
-    fun retryPairing() {
-        _pairingStatus.value = PairingStatus.IDLE
-        _pairingErrorMessage.value = null
-        _hasPairingFailed.value = false
-        _pinValidationResult.value = null
-        _decodedQrSessionPayload.value = null
-        generateNewQrToken()
-        generateNewPin()
-        _userMessage.value = "Nuevo código QR y PIN generados. Listo para reintentar vinculación."
     }
 
     /**
@@ -503,48 +373,52 @@ class DeviceLinkingViewModel @JvmOverloads constructor(
      */
     fun completeLinkingWithPin(context: Context, inputPin: String, deviceName: String = "Dispositivo Móvil"): Boolean {
         val now = System.currentTimeMillis()
+        val validationResult = codeValidator.validatePinCode(
+            inputPin = inputPin,
+            expectedPin = _currentPin.value,
+            createdTimestampMs = _pinCreationTimestamp.value,
+            currentTimeMs = now
+        )
+
+        when (validationResult) {
+            is CodeValidationResult.Empty -> {
+                _userMessage.value = "Ingrese el PIN de 6 dígitos."
+                return false
+            }
+            is CodeValidationResult.InvalidFormat -> {
+                _userMessage.value = validationResult.reason
+                return false
+            }
+            is CodeValidationResult.Expired -> {
+                _userMessage.value = "El PIN ha expirado (válido por 2 min). Genere uno nuevo desde el panel de Gerente."
+                return false
+            }
+            is CodeValidationResult.Incorrect -> {
+                _userMessage.value = "El PIN ingresado es incorrecto. Verifique el PIN con Gerencia."
+                return false
+            }
+            is CodeValidationResult.Valid -> {
+                // PIN is valid
+            }
+        }
+
         val deviceId = DevicePreferences.getLinkedDeviceId(context)
         val email = _userEmail.value.ifBlank { DevicePreferences.getLinkedEmail(context) ?: "usuario@hotel.com" }
 
         viewModelScope.launch {
-            val cloudResult = firestoreRepo.linkDeviceByPin(inputPin, deviceId, deviceName)
-            val isLocalValid = inputPin == _currentPin.value && (now - _pinCreationTimestamp.value <= 300_000L)
-
-            if (cloudResult.isSuccess || isLocalValid) {
-                _pairingStatus.value = PairingStatus.SUCCESS
-                _pairingErrorMessage.value = null
-                _hasPairingFailed.value = false
-
-                val device = DeviceEntity(
-                    name = deviceName,
-                    userAssigned = email,
-                    deviceId = deviceId,
-                    connectionStatus = DeviceConnectionStatus.CONNECTED,
-                    realTimeConnectivityStatus = RealTimeConnectivityStatus.ACTIVE,
-                    lastHeartbeat = System.currentTimeMillis(),
-                    timestamp = System.currentTimeMillis()
-                )
-                repository.insertDevice(device)
-                DeviceDataStoreManager(context).saveDeviceAuthorization(deviceId, email)
-                DevicePreferences.setDeviceAuthorized(context, true)
-                firestoreRepo.startRealtimeListeners()
-                generateNewPin()
-                _userMessage.value = "Dispositivo autorizado y vinculado en tiempo real con éxito."
-            } else {
-                val validationResult = codeValidator.validatePinCode(
-                    inputPin = inputPin,
-                    expectedPin = _currentPin.value,
-                    createdTimestampMs = _pinCreationTimestamp.value,
-                    currentTimeMs = now
-                )
-                when (validationResult) {
-                    is CodeValidationResult.Empty -> recordPairingFailure("Ingrese el PIN de 6 dígitos.")
-                    is CodeValidationResult.InvalidFormat -> recordPairingFailure(validationResult.reason)
-                    is CodeValidationResult.Expired -> recordPairingFailure("El PIN ha expirado. Genere uno nuevo desde Gerencia.")
-                    is CodeValidationResult.Incorrect -> recordPairingFailure("El PIN ingresado es incorrecto. Verifique el código.")
-                    is CodeValidationResult.Valid -> recordPairingFailure("Error al vincular con la nube. Reintente.")
-                }
-            }
+            val device = DeviceEntity(
+                name = deviceName,
+                userAssigned = email,
+                deviceId = deviceId,
+                connectionStatus = DeviceConnectionStatus.CONNECTED,
+                realTimeConnectivityStatus = RealTimeConnectivityStatus.ACTIVE,
+                lastHeartbeat = System.currentTimeMillis(),
+                timestamp = System.currentTimeMillis()
+            )
+            repository.insertDevice(device)
+            DeviceDataStoreManager(context).saveDeviceAuthorization(deviceId, email)
+            generateNewPin()
+            _userMessage.value = "Dispositivo autorizado y vinculado con éxito."
         }
         return true
     }
@@ -554,47 +428,48 @@ class DeviceLinkingViewModel @JvmOverloads constructor(
      */
     fun completeLinkingWithQr(context: Context, qrToken: String, deviceName: String = "Dispositivo Móvil"): Boolean {
         val now = System.currentTimeMillis()
+        val validationResult = codeValidator.validateQrToken(
+            inputQrToken = qrToken,
+            expectedQrToken = _currentQrSessionToken.value,
+            createdTimestampMs = _qrCreationTimestamp.value,
+            currentTimeMs = now
+        )
+
+        when (validationResult) {
+            is CodeValidationResult.Empty -> {
+                _userMessage.value = "Ingrese o escanee un código QR."
+                return false
+            }
+            is CodeValidationResult.Expired -> {
+                _userMessage.value = "El token QR ha expirado (válido por 2 min). Genere uno nuevo en la consola."
+                return false
+            }
+            is CodeValidationResult.Incorrect, is CodeValidationResult.InvalidFormat -> {
+                _userMessage.value = "El código QR es inválido o no corresponde al hotel."
+                return false
+            }
+            is CodeValidationResult.Valid -> {
+                // Token is valid
+            }
+        }
+
         val deviceId = DevicePreferences.getLinkedDeviceId(context)
         val email = _userEmail.value.ifBlank { DevicePreferences.getLinkedEmail(context) ?: "usuario@hotel.com" }
 
         viewModelScope.launch {
-            val cloudResult = firestoreRepo.linkDeviceByQr(qrToken, deviceId, deviceName)
-            val isLocalValid = (qrToken == _currentQrSessionToken.value && (now - _qrCreationTimestamp.value <= 300_000L)) || qrToken.startsWith("RIVERA-LINK-")
-
-            if (cloudResult.isSuccess || isLocalValid) {
-                _pairingStatus.value = PairingStatus.SUCCESS
-                _pairingErrorMessage.value = null
-                _hasPairingFailed.value = false
-
-                val device = DeviceEntity(
-                    name = deviceName,
-                    userAssigned = email,
-                    deviceId = deviceId,
-                    connectionStatus = DeviceConnectionStatus.CONNECTED,
-                    realTimeConnectivityStatus = RealTimeConnectivityStatus.ACTIVE,
-                    lastHeartbeat = System.currentTimeMillis(),
-                    timestamp = System.currentTimeMillis()
-                )
-                repository.insertDevice(device)
-                DeviceDataStoreManager(context).saveDeviceAuthorization(deviceId, email)
-                DevicePreferences.setDeviceAuthorized(context, true)
-                firestoreRepo.startRealtimeListeners()
-                generateNewQrToken()
-                _userMessage.value = "Dispositivo autorizado mediante QR en tiempo real con éxito."
-            } else {
-                val validationResult = codeValidator.validateQrToken(
-                    inputQrToken = qrToken,
-                    expectedQrToken = _currentQrSessionToken.value,
-                    createdTimestampMs = _qrCreationTimestamp.value,
-                    currentTimeMs = now
-                )
-                when (validationResult) {
-                    is CodeValidationResult.Empty -> recordPairingFailure("Ingrese o escanee un código QR.")
-                    is CodeValidationResult.Expired -> recordPairingFailure("El token QR ha expirado. Genere uno nuevo.")
-                    is CodeValidationResult.Incorrect, is CodeValidationResult.InvalidFormat -> recordPairingFailure("El código QR es inválido.")
-                    is CodeValidationResult.Valid -> recordPairingFailure("Error al vincular con la nube. Reintente.")
-                }
-            }
+            val device = DeviceEntity(
+                name = deviceName,
+                userAssigned = email,
+                deviceId = deviceId,
+                connectionStatus = DeviceConnectionStatus.CONNECTED,
+                realTimeConnectivityStatus = RealTimeConnectivityStatus.ACTIVE,
+                lastHeartbeat = System.currentTimeMillis(),
+                timestamp = System.currentTimeMillis()
+            )
+            repository.insertDevice(device)
+            DeviceDataStoreManager(context).saveDeviceAuthorization(deviceId, email)
+            generateNewQrToken()
+            _userMessage.value = "Dispositivo autorizado mediante QR con éxito."
         }
         return true
     }
@@ -684,103 +559,5 @@ class DeviceLinkingViewModel @JvmOverloads constructor(
      */
     fun clearPinValidationResult() {
         _pinValidationResult.value = null
-    }
-
-    /**
-     * Refreshes local Wi-Fi and IP address information.
-     */
-    fun refreshWifiNetworkInfo() {
-        localNetworkManager.refreshNetworkInfo()
-    }
-
-    /**
-     * Starts an active scan across the local Wi-Fi / LAN subnet to find other hotel devices.
-     */
-    fun scanLocalNetwork() {
-        localNetworkManager.scanLocalSubnet {
-            _userMessage.value = "Escaneo de red local Wi-Fi completado."
-        }
-    }
-
-    /**
-     * Pings a specific IP and port to test connection reachability and response latency.
-     */
-    fun pingLanIp(ip: String, port: Int = LocalNetworkManager.DEFAULT_PORT) {
-        viewModelScope.launch {
-            _ipPingResult.value = "Probando conexión con $ip:$port..."
-            val device = localNetworkManager.pingDevice(ip, port)
-            if (device != null) {
-                _ipPingResult.value = "¡Conexión exitosa! Latencia: ${device.responseTimeMs} ms (${device.deviceName})"
-            } else {
-                _ipPingResult.value = "No se pudo conectar a $ip:$port. Verifique la dirección IP y que el dispositivo esté en la misma red Wi-Fi."
-            }
-        }
-    }
-
-    fun clearIpPingResult() {
-        _ipPingResult.value = null
-    }
-
-    /**
-     * Connects to and pairs with another hotel terminal via direct Wi-Fi IP address.
-     */
-    fun connectViaLanIp(
-        targetIp: String,
-        port: Int = LocalNetworkManager.DEFAULT_PORT,
-        deviceName: String = "Terminal Wi-Fi",
-        role: String = "RECEPCIÓN",
-        context: Context? = null,
-        onSuccess: (() -> Unit)? = null
-    ) {
-        viewModelScope.launch {
-            _isConnectingIp.value = true
-            _pairingStatus.value = PairingStatus.PAIRING
-            _pairingErrorMessage.value = null
-            _hasPairingFailed.value = false
-
-            val result = localNetworkManager.sendPairingRequest(
-                targetIp = targetIp.trim(),
-                port = port,
-                myDeviceName = deviceName,
-                myRole = role
-            )
-
-            _isConnectingIp.value = false
-
-            result.onSuccess { successMsg ->
-                _pairingStatus.value = PairingStatus.SUCCESS
-                _hasPairingFailed.value = false
-                _userMessage.value = successMsg
-
-                // Persist device in local Room database
-                val deviceId = "LAN-${targetIp.replace(".", "").takeLast(6)}"
-                linkDevice(
-                    name = deviceName,
-                    userAssigned = role,
-                    deviceId = deviceId,
-                    ipAddress = targetIp.trim()
-                )
-
-                if (context != null) {
-                    DevicePreferences.setDeviceLinked(context, deviceId, "$deviceName@lan.hotelrivera.com")
-                    DeviceDataStoreManager(context).saveDeviceAuthorization(
-                        deviceId = deviceId,
-                        email = "$deviceName@lan.hotelrivera.com"
-                    )
-                }
-
-                onSuccess?.invoke()
-            }.onFailure { error ->
-                _pairingStatus.value = PairingStatus.FAILED
-                _hasPairingFailed.value = true
-                _pairingErrorMessage.value = error.message ?: "Error al conectar por IP"
-                _userMessage.value = "Fallo de conexión Wi-Fi/IP: ${error.message}"
-            }
-        }
-    }
-
-    override fun onCleared() {
-        super.onCleared()
-        localNetworkManager.cleanup()
     }
 }

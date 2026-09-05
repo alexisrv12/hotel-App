@@ -82,7 +82,6 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.data.entities.InvoiceEntity
 import com.example.data.entities.SaleRecordEntity
 import com.example.ui.HotelViewModel
-import com.example.ui.components.ThirtyDayOccupancyRevenueDashboard
 import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Date
@@ -104,11 +103,9 @@ fun FinancialOverviewScreen(
 ) {
     val invoices by viewModel.invoices.collectAsStateWithLifecycle()
     val saleRecords by viewModel.saleRecords.collectAsStateWithLifecycle()
-    val stayHistory by viewModel.stayHistory.collectAsStateWithLifecycle()
-    val rooms by viewModel.rooms.collectAsStateWithLifecycle()
 
     var selectedPeriodFilter by remember { mutableStateOf("7D") } // "TODAY", "7D", "30D", "ALL"
-    var selectedTab by remember { mutableIntStateOf(0) } // 0: Tendencias, 1: Facturas, 2: Métodos de Pago
+    var selectedTab by remember { mutableIntStateOf(0) } // 0: Métodos de Pago, 1: Facturas
 
     // Calculate revenue items for the last 7 or 30 days
     val dailyRevenues = remember(invoices, saleRecords, selectedPeriodFilter) {
@@ -134,7 +131,7 @@ fun FinancialOverviewScreen(
                             fontSize = 20.sp
                         )
                         Text(
-                            text = "Tendencias de ingresos y facturación",
+                            text = "Ingresos y facturación",
                             fontSize = 12.sp,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -248,7 +245,7 @@ fun FinancialOverviewScreen(
                         ) {
                             Column {
                                 Text(
-                                    text = "Tendencia de Ingresos Diarios",
+                                    text = "Registro de Ingresos Diarios",
                                     style = MaterialTheme.typography.titleMedium,
                                     fontWeight = FontWeight.Bold
                                 )
@@ -304,19 +301,6 @@ fun FinancialOverviewScreen(
                         }
                     }
                 }
-            }
-
-            // 30-Day Recharts-styled Occupancy & Revenue Dashboard Component
-            item {
-                ThirtyDayOccupancyRevenueDashboard(
-                    stayHistory = stayHistory,
-                    invoices = invoices,
-                    saleRecords = saleRecords,
-                    totalRoomsCount = rooms.size.coerceAtLeast(1),
-                    onResetMetrics = {
-                        viewModel.resetOccupancyAndRevenueMetrics()
-                    }
-                )
             }
 
             // Tabs for Breakdown

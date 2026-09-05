@@ -1185,17 +1185,6 @@ fun GerenteReportsScreen(
                             }
                         }
 
-                        // 30-Day Occupancy & Revenue Interactive Recharts-like Dashboard
-                        com.example.ui.components.ThirtyDayOccupancyRevenueDashboard(
-                            stayHistory = history,
-                            invoices = invoices,
-                            saleRecords = sales,
-                            totalRoomsCount = totalRoomsCount,
-                            onResetMetrics = {
-                                viewModel.resetOccupancyAndRevenueMetrics()
-                            }
-                        )
-
                         // Room Performance Cards
                         Card(
                             modifier = Modifier.fillMaxWidth(),

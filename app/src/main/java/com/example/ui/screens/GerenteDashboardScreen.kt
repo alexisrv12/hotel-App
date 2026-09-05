@@ -13,9 +13,6 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.lazy.grid.GridCells
-import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
-import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -65,8 +62,6 @@ import androidx.compose.ui.unit.sp
 import com.example.ui.HotelViewModel
 import com.example.ui.Screen
 import com.example.ui.components.InventoryThresholdAlertBanner
-import com.example.ui.components.OccupancyTrendCard
-import com.example.ui.components.ThirtyDayOccupancyRevenueDashboard
 import com.example.ui.theme.HotelGold
 import com.example.ui.theme.HotelNavy
 
@@ -87,10 +82,6 @@ fun GerenteDashboardScreen(
 ) {
     val isDarkTheme = hotelViewModel?.isDarkTheme?.collectAsState()?.value ?: false
     val lowStockSupplies = hotelViewModel?.lowStockSupplies?.collectAsState()?.value ?: emptyList()
-    val stayHistory = hotelViewModel?.stayHistory?.collectAsState()?.value ?: emptyList()
-    val invoices = hotelViewModel?.invoices?.collectAsState()?.value ?: emptyList()
-    val saleRecords = hotelViewModel?.saleRecords?.collectAsState()?.value ?: emptyList()
-    val rooms = hotelViewModel?.rooms?.collectAsState()?.value ?: emptyList()
 
     val menuItems = listOf(
         ManagerMenuItem("Habitaciones", "Gestión de cuartos y estado", Icons.Default.MeetingRoom, Screen.GERENTE_ROOMS, HotelNavy),
@@ -104,7 +95,7 @@ fun GerenteDashboardScreen(
         ManagerMenuItem("Inventario Insumos", "Descuento automático de insumos", Icons.Default.Inventory2, Screen.GERENTE_SUPPLIES, HotelGold),
         ManagerMenuItem("Escanear QR Insumo", "Auditoría de stock con CameraX", Icons.Default.Inventory2, Screen.INVENTORY_SCANNER, HotelNavy),
         ManagerMenuItem("Inventario Ventas", "Registro de consumos y ventas", Icons.Default.PointOfSale, Screen.GERENTE_SALES, HotelNavy),
-        ManagerMenuItem("Resumen Financiero", "Tendencias de ingresos en tiempo real", Icons.Default.AttachMoney, Screen.FINANCIAL_OVERVIEW, HotelGold),
+        ManagerMenuItem("Resumen Financiero", "Facturación y balance en tiempo real", Icons.Default.AttachMoney, Screen.FINANCIAL_OVERVIEW, HotelGold),
         ManagerMenuItem("Reportes", "Ingresos, ocupación y métricas", Icons.Default.Assessment, Screen.GERENTE_REPORTS, HotelGold),
         ManagerMenuItem("Ajustes", "PIN, nombre hotel, moneda", Icons.Default.Settings, Screen.GERENTE_SETTINGS, HotelNavy),
         ManagerMenuItem("Usuarios", "Gestión de personal y accesos", Icons.Default.People, Screen.GERENTE_USERS, HotelGold),
@@ -161,17 +152,6 @@ fun GerenteDashboardScreen(
                 )
             }
 
-            // 30-Day Recharts-styled Occupancy & Revenue Dashboard Component
-            ThirtyDayOccupancyRevenueDashboard(
-                stayHistory = stayHistory,
-                invoices = invoices,
-                saleRecords = saleRecords,
-                totalRoomsCount = rooms.size.coerceAtLeast(1),
-                onResetMetrics = {
-                    hotelViewModel?.resetOccupancyAndRevenueMetrics()
-                }
-            )
-
             Text(
                 text = "Panel de Control Gerencial",
                 fontSize = 18.sp,
@@ -179,53 +159,61 @@ fun GerenteDashboardScreen(
                 color = MaterialTheme.colorScheme.onBackground
             )
 
-            LazyVerticalGrid(
-                columns = GridCells.Adaptive(minSize = 150.dp),
+            Column(
                 verticalArrangement = Arrangement.spacedBy(14.dp),
-                horizontalArrangement = Arrangement.spacedBy(14.dp),
-                modifier = Modifier.height(650.dp)
+                modifier = Modifier.fillMaxWidth()
             ) {
-                items(menuItems) { item ->
-                    Card(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clickable { onNavigateToSection(item.targetScreen) }
-                            .testTag("menu_${item.title.lowercase().replace(" ", "_")}"),
-                        shape = RoundedCornerShape(16.dp),
-                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                        elevation = CardDefaults.cardElevation(defaultElevation = 4.dp)
+                menuItems.chunked(2).forEach { rowItems ->
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(14.dp)
                     ) {
-                        Column(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(16.dp),
-                            horizontalAlignment = Alignment.Start
-                        ) {
-                            Surface(
-                                color = item.color.copy(alpha = 0.12f),
-                                shape = CircleShape,
-                                modifier = Modifier.size(48.dp)
+                        rowItems.forEach { item ->
+                            Card(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .clickable { onNavigateToSection(item.targetScreen) }
+                                    .testTag("menu_${item.title.lowercase().replace(" ", "_")}"),
+                                shape = RoundedCornerShape(16.dp),
+                                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                                elevation = CardDefaults.cardElevation(defaultElevation = 4.dp)
                             ) {
-                                Icon(
-                                    imageVector = item.icon,
-                                    contentDescription = item.title,
-                                    tint = item.color,
-                                    modifier = Modifier.padding(10.dp)
-                                )
+                                Column(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(16.dp),
+                                    horizontalAlignment = Alignment.Start
+                                ) {
+                                    Surface(
+                                        color = item.color.copy(alpha = 0.12f),
+                                        shape = CircleShape,
+                                        modifier = Modifier.size(48.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = item.icon,
+                                            contentDescription = item.title,
+                                            tint = item.color,
+                                            modifier = Modifier.padding(10.dp)
+                                        )
+                                    }
+                                    Spacer(modifier = Modifier.height(12.dp))
+                                    Text(
+                                        text = item.title,
+                                        fontSize = 16.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = MaterialTheme.colorScheme.onSurface
+                                    )
+                                    Spacer(modifier = Modifier.height(4.dp))
+                                    Text(
+                                        text = item.subtitle,
+                                        fontSize = 11.sp,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
                             }
-                            Spacer(modifier = Modifier.height(12.dp))
-                            Text(
-                                text = item.title,
-                                fontSize = 16.sp,
-                                fontWeight = FontWeight.Bold,
-                                color = MaterialTheme.colorScheme.onSurface
-                            )
-                            Spacer(modifier = Modifier.height(4.dp))
-                            Text(
-                                text = item.subtitle,
-                                fontSize = 11.sp,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
+                        }
+                        if (rowItems.size == 1) {
+                            Spacer(modifier = Modifier.weight(1f))
                         }
                     }
                 }
