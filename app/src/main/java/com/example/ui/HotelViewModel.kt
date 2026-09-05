@@ -50,6 +50,8 @@ import com.google.firebase.firestore.SetOptions
 import com.google.firebase.firestore.firestore
 import com.google.firebase.firestore.firestoreSettings
 import com.google.firebase.firestore.persistentCacheSettings
+import com.example.data.model.VinculacionToken
+import java.util.UUID
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -153,6 +155,13 @@ class HotelViewModel(application: Application) : AndroidViewModel(application) {
     // Backup / Restore Toast Message
     private val _userMessage = MutableStateFlow<String?>(null)
     val userMessage: StateFlow<String?> = _userMessage.asStateFlow()
+
+    // Vinculación de Dispositivos con Firestore
+    private val _tokenVinculacion = MutableStateFlow<VinculacionToken?>(null)
+    val tokenVinculacion: StateFlow<VinculacionToken?> = _tokenVinculacion.asStateFlow()
+
+    private val _estadoVinculacion = MutableStateFlow<String?>(null)
+    val estadoVinculacion: StateFlow<String?> = _estadoVinculacion.asStateFlow()
 
     // Cloud Firestore instance with offline persistent cache and initialization safety
     val firestore: FirebaseFirestore
@@ -1168,5 +1177,109 @@ class HotelViewModel(application: Application) : AndroidViewModel(application) {
                 _userMessage.value = "Error al leer el archivo de copia de seguridad."
             }
         }
+    }
+
+    /**
+     * Genera un nuevo token de vinculación con un PIN aleatorio de 6 dígitos
+     * y un string aleatorio para el código QR. Guarda el objeto en la colección
+     * "vinculaciones" de Firestore y actualiza el StateFlow tokenVinculacion.
+     */
+    fun generarTokenVinculacion() {
+        val nuevoPin = (100000..999999).random().toString()
+        val nuevoQrToken = "TOKEN-QR-${UUID.randomUUID().toString().replace("-", "").take(12).uppercase()}-${System.currentTimeMillis()}"
+
+        viewModelScope.launch {
+            try {
+                ensureFirebaseInitialized()
+                val token = VinculacionToken(
+                    pin = nuevoPin,
+                    qrToken = nuevoQrToken,
+                    fechaCreacion = System.currentTimeMillis(),
+                    activo = true
+                )
+                val docRef = firestore.collection("vinculaciones").document()
+                val tokenConId = token.copy(id = docRef.id)
+
+                docRef.set(tokenConId)
+                    .addOnSuccessListener {
+                        Log.i("HotelViewModel", "Token de vinculación guardado en Firestore: ${docRef.id} [PIN: $nuevoPin]")
+                    }
+                    .addOnFailureListener { e ->
+                        Log.e("HotelViewModel", "Error al guardar token de vinculación en Firestore: ${e.message}", e)
+                    }
+
+                _tokenVinculacion.value = tokenConId
+                _estadoVinculacion.value = "Token generado correctamente"
+            } catch (e: Exception) {
+                Log.e("HotelViewModel", "Error al generar token de vinculación: ${e.message}", e)
+                _estadoVinculacion.value = "Error al generar token: ${e.message}"
+            }
+        }
+    }
+
+    /**
+     * Busca en Firestore si existe el PIN o QR proporcionado y si se encuentra activo.
+     * Si es correcto, cambia el estado a "Vinculación Exitosa".
+     */
+    fun validarToken(pinOQr: String, onResultado: ((Boolean) -> Unit)? = null) {
+        val busqueda = pinOQr.trim()
+        if (busqueda.isBlank()) {
+            _estadoVinculacion.value = "Ingrese un PIN o Token"
+            onResultado?.invoke(false)
+            return
+        }
+
+        viewModelScope.launch {
+            try {
+                ensureFirebaseInitialized()
+                // 1. Buscar coincidencia por campo 'pin'
+                firestore.collection("vinculaciones")
+                    .whereEqualTo("pin", busqueda)
+                    .whereEqualTo("activo", true)
+                    .get()
+                    .addOnSuccessListener { pinSnapshots ->
+                        if (pinSnapshots != null && !pinSnapshots.isEmpty) {
+                            _estadoVinculacion.value = "Vinculación Exitosa"
+                            Log.i("HotelViewModel", "PIN $busqueda validado exitosamente en Firestore")
+                            onResultado?.invoke(true)
+                        } else {
+                            // 2. Si no coincide por PIN, buscar por campo 'qrToken'
+                            firestore.collection("vinculaciones")
+                                .whereEqualTo("qrToken", busqueda)
+                                .whereEqualTo("activo", true)
+                                .get()
+                                .addOnSuccessListener { qrSnapshots ->
+                                    if (qrSnapshots != null && !qrSnapshots.isEmpty) {
+                                        _estadoVinculacion.value = "Vinculación Exitosa"
+                                        Log.i("HotelViewModel", "QR Token validado exitosamente en Firestore")
+                                        onResultado?.invoke(true)
+                                    } else {
+                                        _estadoVinculacion.value = "Token o PIN no encontrado o inactivo"
+                                        Log.w("HotelViewModel", "Token/PIN no válido en Firestore: $busqueda")
+                                        onResultado?.invoke(false)
+                                    }
+                                }
+                                .addOnFailureListener { e ->
+                                    Log.e("HotelViewModel", "Error al consultar vinculaciones por QR: ${e.message}", e)
+                                    _estadoVinculacion.value = "Error al validar token"
+                                    onResultado?.invoke(false)
+                                }
+                        }
+                    }
+                    .addOnFailureListener { e ->
+                        Log.e("HotelViewModel", "Error al consultar vinculaciones por PIN: ${e.message}", e)
+                        _estadoVinculacion.value = "Error al validar token"
+                        onResultado?.invoke(false)
+                    }
+            } catch (e: Exception) {
+                Log.e("HotelViewModel", "Excepción al validar token en Firestore: ${e.message}", e)
+                _estadoVinculacion.value = "Error de conexión"
+                onResultado?.invoke(false)
+            }
+        }
+    }
+
+    fun limpiarEstadoVinculacion() {
+        _estadoVinculacion.value = null
     }
 }

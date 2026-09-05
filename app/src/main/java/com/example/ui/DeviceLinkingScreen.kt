@@ -9,11 +9,13 @@ import com.example.ui.viewmodel.DeviceLinkingViewModel
 fun DeviceLinkingScreen(
     modifier: Modifier = Modifier,
     viewModel: DeviceLinkingViewModel = androidx.lifecycle.viewmodel.compose.viewModel(),
+    hotelViewModel: HotelViewModel = androidx.lifecycle.viewmodel.compose.viewModel(),
     onNavigateBack: (() -> Unit)? = null
 ) {
     com.example.ui.screens.DeviceLinkingScreen(
         modifier = modifier,
         viewModel = viewModel,
+        hotelViewModel = hotelViewModel,
         onNavigateBack = onNavigateBack
     )
 }

@@ -330,6 +330,7 @@ fun HotelRiveraApp(viewModel: HotelViewModel) {
 
             Screen.GERENTE_DEVICE_LINKING -> {
                 DeviceDashboardScreen(
+                    hotelViewModel = viewModel,
                     onBackToManagerMenu = { viewModel.navigateTo(Screen.GERENTE_DASHBOARD) }
                 )
             }

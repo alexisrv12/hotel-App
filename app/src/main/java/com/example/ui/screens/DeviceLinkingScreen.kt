@@ -169,6 +169,7 @@ enum class ReceptionistInputMode {
 fun DeviceLinkingScreen(
     modifier: Modifier = Modifier,
     viewModel: DeviceLinkingViewModel = viewModel(),
+    hotelViewModel: com.example.ui.HotelViewModel = viewModel(),
     onNavigateBack: (() -> Unit)? = null
 ) {
     val context = LocalContext.current
@@ -196,6 +197,21 @@ fun DeviceLinkingScreen(
     val decodedQrPayload by viewModel.decodedQrSessionPayload.collectAsState()
     val pinValidationResult by viewModel.pinValidationResult.collectAsState()
     val userMessage by viewModel.userMessage.collectAsState()
+
+    val tokenVinculacion by hotelViewModel.tokenVinculacion.collectAsState()
+    val estadoVinculacion by hotelViewModel.estadoVinculacion.collectAsState()
+
+    val effectivePin = tokenVinculacion?.pin?.ifBlank { currentPin } ?: currentPin
+    val effectiveQrToken = tokenVinculacion?.qrToken?.ifBlank { currentQrSessionToken } ?: currentQrSessionToken
+
+    LaunchedEffect(estadoVinculacion) {
+        estadoVinculacion?.let { msg ->
+            snackbarHostState.showSnackbar(msg)
+            if (msg == "Vinculación Exitosa") {
+                Toast.makeText(context, "¡Vinculación Exitosa!", Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
 
     LaunchedEffect(isOnline) {
         if (isOnline && networkFailureMessage != null) {
@@ -382,28 +398,36 @@ fun DeviceLinkingScreen(
                                 Toast.makeText(context, "Se requiere conexión a Internet.", Toast.LENGTH_LONG).show()
                             }
                         },
-                        currentPin = currentPin,
-                        currentQrSessionToken = currentQrSessionToken,
+                        currentPin = effectivePin,
+                        currentQrSessionToken = effectiveQrToken,
                         pinCountdownText = pinCountdownText,
                         qrCountdownText = qrCountdownText,
                         linkedDevices = linkedDevices,
                         onGenerateNewPin = {
+                            hotelViewModel.generarTokenVinculacion()
                             if (NetworkConnectivityHelper.isNetworkAvailable(context)) {
                                 viewModel.generateNewPin()
                                 networkFailureMessage = null
                             } else {
                                 networkFailureMessage = "No se pudo generar el PIN: Sin conexión a Internet."
-                                pendingGenerationAction = { viewModel.generateNewPin() }
+                                pendingGenerationAction = {
+                                    hotelViewModel.generarTokenVinculacion()
+                                    viewModel.generateNewPin()
+                                }
                                 Toast.makeText(context, "Se requiere conexión a Internet.", Toast.LENGTH_LONG).show()
                             }
                         },
                         onGenerateNewQr = {
+                            hotelViewModel.generarTokenVinculacion()
                             if (NetworkConnectivityHelper.isNetworkAvailable(context)) {
                                 viewModel.generateNewQrToken()
                                 networkFailureMessage = null
                             } else {
                                 networkFailureMessage = "No se pudo generar el QR: Sin conexión a Internet."
-                                pendingGenerationAction = { viewModel.generateNewQrToken() }
+                                pendingGenerationAction = {
+                                    hotelViewModel.generarTokenVinculacion()
+                                    viewModel.generateNewQrToken()
+                                }
                                 Toast.makeText(context, "Se requiere conexión a Internet.", Toast.LENGTH_LONG).show()
                             }
                         },
@@ -421,16 +445,26 @@ fun DeviceLinkingScreen(
                     ReceptionistInterfaceContent(
                         receptionMode = receptionMode,
                         onReceptionModeChange = { receptionMode = it },
-                        currentPin = currentPin,
+                        currentPin = effectivePin,
                         pinValidationResult = pinValidationResult,
                         decodedQrPayload = decodedQrPayload,
+                        estadoVinculacion = estadoVinculacion,
                         linkedDevices = linkedDevices,
-                        onValidatePin = { viewModel.validatePin(it) },
-                        onDecodeQrToken = { viewModel.decodeQrToken(it) },
+                        onValidatePin = { pin ->
+                            hotelViewModel.validarToken(pin)
+                            viewModel.validatePin(pin)
+                        },
+                        onDecodeQrToken = { qr ->
+                            hotelViewModel.validarToken(qr)
+                            viewModel.decodeQrToken(qr)
+                        },
                         onLinkDevice = { name, userAssigned, deviceId ->
                             viewModel.linkDevice(name = name, userAssigned = userAssigned, deviceId = deviceId ?: "DEV-${System.currentTimeMillis().toString().takeLast(6)}")
                         },
-                        onClearValidationResult = { viewModel.clearPinValidationResult() },
+                        onClearValidationResult = {
+                            viewModel.clearPinValidationResult()
+                            hotelViewModel.limpiarEstadoVinculacion()
+                        },
                         onOpenQrScanner = { showCameraScannerDialog = true }
                     )
                 }
@@ -708,7 +742,7 @@ private fun ManagerInterfaceContent(
                 QrDisplayCard(
                     qrSessionToken = currentQrSessionToken,
                     countdownText = qrCountdownText,
-                    onRefreshQr = { pendingNetworkConfirmationMode = ManagerLinkingMode.QR },
+                    onRefreshQr = { onGenerateNewQr() },
                     onCopyToken = {
                         val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
                         val clip = ClipData.newPlainText("QR Token", currentQrSessionToken)
@@ -722,7 +756,7 @@ private fun ManagerInterfaceContent(
                 PinDisplayCard(
                     pin = currentPin,
                     countdownText = pinCountdownText,
-                    onRefreshPin = { pendingNetworkConfirmationMode = ManagerLinkingMode.PIN },
+                    onRefreshPin = { onGenerateNewPin() },
                     onCopyPin = {
                         val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
                         val clip = ClipData.newPlainText("PIN Vinculación", currentPin)
@@ -789,6 +823,7 @@ private fun ReceptionistInterfaceContent(
     currentPin: String,
     pinValidationResult: PinValidationResult?,
     decodedQrPayload: String?,
+    estadoVinculacion: String? = null,
     linkedDevices: List<DeviceEntity>,
     onValidatePin: (String) -> Unit,
     onDecodeQrToken: (String) -> Unit,
@@ -936,6 +971,32 @@ private fun ReceptionistInterfaceContent(
                             Icon(Icons.Default.CheckCircle, contentDescription = null)
                             Spacer(modifier = Modifier.width(8.dp))
                             Text("Validar y Autorizar Terminal")
+                        }
+
+                        if (estadoVinculacion == "Vinculación Exitosa") {
+                            Surface(
+                                color = Color(0xFFE8F5E9),
+                                shape = RoundedCornerShape(8.dp),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(12.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.CheckCircle,
+                                        contentDescription = null,
+                                        tint = Color(0xFF2E7D32)
+                                    )
+                                    Text(
+                                        text = "Vinculación Exitosa: Autorizado en Firestore.",
+                                        color = Color(0xFF2E7D32),
+                                        style = MaterialTheme.typography.bodySmall,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                }
+                            }
                         }
 
                         pinValidationResult?.let { result ->
@@ -1109,6 +1170,32 @@ private fun ReceptionistInterfaceContent(
                             Text("Validar Token Manualmente")
                         }
 
+                        if (estadoVinculacion == "Vinculación Exitosa") {
+                            Surface(
+                                color = Color(0xFFE8F5E9),
+                                shape = RoundedCornerShape(8.dp),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(12.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.CheckCircle,
+                                        contentDescription = null,
+                                        tint = Color(0xFF2E7D32)
+                                    )
+                                    Text(
+                                        text = "Vinculación Exitosa: QR verificado en Firestore.",
+                                        color = Color(0xFF2E7D32),
+                                        style = MaterialTheme.typography.bodySmall,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                }
+                            }
+                        }
+
                         decodedQrPayload?.let { payload ->
                             Surface(
                                 color = Color(0xFFE8F5E9),
@@ -1249,7 +1336,7 @@ private fun QrDisplayCard(
                 ) {
                     Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(16.dp))
                     Spacer(modifier = Modifier.width(4.dp))
-                    Text("Regenerar QR")
+                    Text("Generar QR")
                 }
             }
         }
@@ -1374,7 +1461,7 @@ private fun PinDisplayCard(
                 ) {
                     Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(16.dp))
                     Spacer(modifier = Modifier.width(4.dp))
-                    Text("Generar Nuevo")
+                    Text("Generar PIN")
                 }
             }
         }

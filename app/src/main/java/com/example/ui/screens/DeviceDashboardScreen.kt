@@ -106,6 +106,7 @@ import java.util.Locale
 fun DeviceDashboardScreen(
     modifier: Modifier = Modifier,
     viewModel: DeviceLinkingViewModel = viewModel(),
+    hotelViewModel: com.example.ui.HotelViewModel = viewModel(),
     onBackToManagerMenu: (() -> Unit)? = null
 ) {
     val context = LocalContext.current
@@ -306,6 +307,7 @@ fun DeviceDashboardScreen(
                         // Integrated DeviceLinkingScreen
                         DeviceLinkingScreen(
                             viewModel = viewModel,
+                            hotelViewModel = hotelViewModel,
                             onNavigateBack = null
                         )
                     }
