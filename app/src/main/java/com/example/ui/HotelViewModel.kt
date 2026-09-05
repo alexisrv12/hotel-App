@@ -8,6 +8,7 @@ import android.os.Build
 import android.os.VibrationEffect
 import android.os.Vibrator
 import android.os.VibratorManager
+import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.data.database.HotelDatabase
@@ -24,6 +25,7 @@ import com.example.data.entities.StayHistoryEntity
 import com.example.data.entities.SupplyEntity
 import com.example.data.entities.TimeRateEntity
 import com.example.data.entities.UserEntity
+import com.example.data.model.Habitacion
 import com.example.data.repository.HotelRepository
 import com.example.data.repository.SessionDataStoreRepository
 import com.example.data.repository.UserSession
@@ -38,6 +40,16 @@ import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import com.example.utils.HotelNotificationHelper
+import com.example.utils.SecurityUtils
+import com.google.firebase.Firebase
+import com.google.firebase.FirebaseApp
+import com.google.firebase.FirebaseOptions
+import com.google.firebase.firestore.FirebaseFirestore
+import com.google.firebase.firestore.ListenerRegistration
+import com.google.firebase.firestore.SetOptions
+import com.google.firebase.firestore.firestore
+import com.google.firebase.firestore.firestoreSettings
+import com.google.firebase.firestore.persistentCacheSettings
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -104,6 +116,11 @@ class HotelViewModel(application: Application) : AndroidViewModel(application) {
     val maintenanceRequests: StateFlow<List<MaintenanceRequestEntity>>
     val lowStockSupplies: StateFlow<List<SupplyEntity>>
 
+    // Estado de habitaciones en tiempo real con Firestore
+    private val _habitaciones = MutableStateFlow<List<Habitacion>>(emptyList())
+    val habitaciones: StateFlow<List<Habitacion>> = _habitaciones.asStateFlow()
+    private var habitacionesListener: ListenerRegistration? = null
+
     // Live Clock for Room Timers
     private val _currentTimeMillis = MutableStateFlow(System.currentTimeMillis())
     val currentTimeMillis: StateFlow<Long> = _currentTimeMillis.asStateFlow()
@@ -137,7 +154,45 @@ class HotelViewModel(application: Application) : AndroidViewModel(application) {
     private val _userMessage = MutableStateFlow<String?>(null)
     val userMessage: StateFlow<String?> = _userMessage.asStateFlow()
 
+    // Cloud Firestore instance with offline persistent cache and initialization safety
+    val firestore: FirebaseFirestore
+        get() {
+            ensureFirebaseInitialized()
+            return Firebase.firestore
+        }
+
+    private fun ensureFirebaseInitialized() {
+        try {
+            if (FirebaseApp.getApps(getApplication()).isEmpty()) {
+                val app = FirebaseApp.initializeApp(getApplication())
+                if (app == null) {
+                    val options = FirebaseOptions.Builder()
+                        .setApplicationId("com.aistudio.hotelrivera.app")
+                        .setProjectId("manager-hotel-r")
+                        .setApiKey("AIzaSyAl18319cmBD2io7hCs9vlP1o9jXgM0PVQ")
+                        .setStorageBucket("manager-hotel-r.firebasestorage.app")
+                        .build()
+                    FirebaseApp.initializeApp(getApplication(), options)
+                }
+            }
+        } catch (e: Exception) {
+            Log.w("HotelViewModel", "FirebaseApp init check: ${e.message}")
+        }
+    }
+
     init {
+        ensureFirebaseInitialized()
+
+        // Inicialización y configuración de Firebase Firestore con persistencia offline
+        try {
+            firestore.firestoreSettings = firestoreSettings {
+                setLocalCacheSettings(persistentCacheSettings {})
+            }
+            Log.i("HotelViewModel", "Firestore persistentCacheSettings enabled successfully.")
+        } catch (e: Exception) {
+            Log.w("HotelViewModel", "Firestore settings could not be modified or were already applied: ${e.message}")
+        }
+
         val database = HotelDatabase.getDatabase(application, viewModelScope)
         repository = HotelRepository(database.hotelDao())
 
@@ -192,6 +247,79 @@ class HotelViewModel(application: Application) : AndroidViewModel(application) {
         startLiveClock()
         monitorRoomTimers()
         ensureDefaultUsers()
+        iniciarSincronizacionHabitaciones()
+    }
+
+    /**
+     * Escucha cambios en tiempo real en la colección 'habitaciones' de Cloud Firestore
+     * y actualiza el flujo de estado _habitaciones.
+     */
+    fun iniciarSincronizacionHabitaciones() {
+        try {
+            ensureFirebaseInitialized()
+            habitacionesListener?.remove()
+            habitacionesListener = Firebase.firestore.collection("habitaciones")
+                .addSnapshotListener { snapshot, error ->
+                    if (error != null) {
+                        Log.w("HotelViewModel", "Error al escuchar cambios en habitaciones: ${error.message}")
+                        return@addSnapshotListener
+                    }
+                    if (snapshot != null) {
+                        val lista = snapshot.documents.mapNotNull { doc ->
+                            try {
+                                val id = doc.id
+                                val numero = doc.getString("numero") ?: doc.id
+                                val estado = doc.getString("estado") ?: "Disponible"
+                                val precio = doc.getDouble("precio")
+                                    ?: (doc.get("precio") as? Number)?.toDouble()
+                                    ?: 0.0
+                                Habitacion(
+                                    id = id,
+                                    numero = numero,
+                                    estado = estado,
+                                    precio = precio
+                                )
+                            } catch (e: Exception) {
+                                Log.w("HotelViewModel", "Error al deserializar habitación ${doc.id}: ${e.message}")
+                                doc.toObject(Habitacion::class.java)?.copy(id = doc.id)
+                            }
+                        }
+                        _habitaciones.value = lista
+                    }
+                }
+        } catch (e: Exception) {
+            Log.e("HotelViewModel", "Error iniciando sincronización de habitaciones: ${e.message}", e)
+        }
+    }
+
+    /**
+     * Actualiza el estado de una habitación en Firestore (ej: 'Disponible', 'Ocupada', 'Limpieza').
+     */
+    fun actualizarEstadoHabitacion(idHabitacion: String, nuevoEstado: String) {
+        if (idHabitacion.isBlank()) return
+        try {
+            ensureFirebaseInitialized()
+            Firebase.firestore.collection("habitaciones").document(idHabitacion)
+                .update("estado", nuevoEstado)
+                .addOnSuccessListener {
+                    Log.i("HotelViewModel", "Estado de habitación $idHabitacion actualizado a $nuevoEstado")
+                }
+                .addOnFailureListener { e ->
+                    Log.w("HotelViewModel", "Update directo falló, sincronizando con merge: ${e.message}")
+                    Firebase.firestore.collection("habitaciones").document(idHabitacion)
+                        .set(mapOf("estado" to nuevoEstado, "numero" to idHabitacion), SetOptions.merge())
+                        .addOnSuccessListener {
+                            Log.i("HotelViewModel", "Habitación $idHabitacion sincronizada con merge en Firestore.")
+                        }
+                }
+        } catch (e: Exception) {
+            Log.e("HotelViewModel", "Error al actualizar estado de habitación: ${e.message}", e)
+        }
+    }
+
+    override fun onCleared() {
+        super.onCleared()
+        habitacionesListener?.remove()
     }
 
     private fun ensureDefaultUsers() {
@@ -204,6 +332,16 @@ class HotelViewModel(application: Application) : AndroidViewModel(application) {
                             fullName = "Gerencia Rivera Hotel",
                             pinCode = "12345678",
                             role = "GERENTE"
+                        )
+                    )
+                }
+                if (currentUsers.none { it.username.equals("recepcion@hotelrivera.com", ignoreCase = true) }) {
+                    repository.saveUser(
+                        UserEntity(
+                            username = "recepcion@hotelrivera.com",
+                            fullName = "Recepción Rivera Hotel",
+                            pinCode = "0000",
+                            role = "RECEPCION"
                         )
                     )
                 }
@@ -311,7 +449,8 @@ class HotelViewModel(application: Application) : AndroidViewModel(application) {
             val inputPrefix = if (input.contains("@")) input.substringBefore("@") else input
 
             val usernameMatches = uName == input || uPrefix == inputPrefix || uName == inputPrefix
-            val pinMatches = user.pinCode == pwd || 
+            val pinMatches = SecurityUtils.verifyPassword(pwd, user.passwordHash, user.pinCode) ||
+                    user.pinCode == pwd || 
                     (pwd == "1234" && user.role == "GERENTE") || 
                     (pwd == "0000" && user.role == "RECEPCION")
             usernameMatches && pinMatches && user.isActive

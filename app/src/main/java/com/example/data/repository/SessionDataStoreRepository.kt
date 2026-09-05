@@ -53,11 +53,7 @@ class SessionDataStoreRepository(private val context: Context) {
      */
     val userRoleFlow: Flow<String?> = dataStore.data
         .catch { exception ->
-            if (exception is IOException) {
-                emit(emptyPreferences())
-            } else {
-                throw exception
-            }
+            emit(emptyPreferences())
         }
         .map { preferences ->
             preferences[KEY_USER_ROLE]
@@ -68,11 +64,7 @@ class SessionDataStoreRepository(private val context: Context) {
      */
     val isDeviceAuthorizedFlow: Flow<Boolean> = dataStore.data
         .catch { exception ->
-            if (exception is IOException) {
-                emit(emptyPreferences())
-            } else {
-                throw exception
-            }
+            emit(emptyPreferences())
         }
         .map { preferences ->
             preferences[KEY_IS_DEVICE_AUTHORIZED] ?: false
@@ -83,11 +75,7 @@ class SessionDataStoreRepository(private val context: Context) {
      */
     val userSessionFlow: Flow<UserSession> = dataStore.data
         .catch { exception ->
-            if (exception is IOException) {
-                emit(emptyPreferences())
-            } else {
-                throw exception
-            }
+            emit(emptyPreferences())
         }
         .map { preferences ->
             UserSession(
@@ -104,6 +92,9 @@ class SessionDataStoreRepository(private val context: Context) {
      * Flow of active linking PIN
      */
     val activeLinkingPinFlow: Flow<Pair<String?, Long>> = dataStore.data
+        .catch { exception ->
+            emit(emptyPreferences())
+        }
         .map { preferences ->
             Pair(
                 preferences[KEY_ACTIVE_LINKING_PIN],
@@ -115,6 +106,9 @@ class SessionDataStoreRepository(private val context: Context) {
      * Flow of active linking QR token
      */
     val activeLinkingQrFlow: Flow<Pair<String?, Long>> = dataStore.data
+        .catch { exception ->
+            emit(emptyPreferences())
+        }
         .map { preferences ->
             Pair(
                 preferences[KEY_ACTIVE_LINKING_QR],
