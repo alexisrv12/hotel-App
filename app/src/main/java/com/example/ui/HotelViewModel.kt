@@ -1218,68 +1218,88 @@ class HotelViewModel(application: Application) : AndroidViewModel(application) {
             }
         }
     }
+// --- SISTEMA DE SEGURIDAD, VINCULACIÓN Y CONTROL DE SESIONES ---
 
-    /**
-     * Busca en Firestore si existe el PIN o QR proporcionado y si se encuentra activo.
-     * Si es correcto, cambia el estado a "Vinculación Exitosa".
-     */
-    fun validarToken(pinOQr: String, onResultado: ((Boolean) -> Unit)? = null) {
-        val busqueda = pinOQr.trim()
-        if (busqueda.isBlank()) {
-            _estadoVinculacion.value = "Ingrese un PIN o Token"
-            onResultado?.invoke(false)
-            return
+// 1. GERENTE: Genera un PIN de acceso seguro
+fun generarTokenVinculacion() {
+    val nuevoPin = (100000..999999).random().toString()
+    val tokenData = mapOf(
+        "pin" to nuevoPin,
+        "activo" to true,
+        "timestamp" to System.currentTimeMillis()
+    )
+
+    firestore.collection("vinculaciones").document(nuevoPin)
+        .set(tokenData)
+        .addOnSuccessListener {
+            _tokenVinculacion.value = nuevoPin
+            _estadoVinculacion.value = "PIN Generado: $nuevoPin"
         }
+        .addOnFailureListener { e ->
+            _estadoVinculacion.value = "Error al generar PIN: ${e.localizedMessage}"
+        }
+}
 
-        viewModelScope.launch {
-            try {
-                ensureFirebaseInitialized()
-                // 1. Buscar coincidencia por campo 'pin'
-                firestore.collection("vinculaciones")
-                    .whereEqualTo("pin", busqueda)
-                    .whereEqualTo("activo", true)
-                    .get()
-                    .addOnSuccessListener { pinSnapshots ->
-                        if (pinSnapshots != null && !pinSnapshots.isEmpty) {
-                            _estadoVinculacion.value = "Vinculación Exitosa"
-                            Log.i("HotelViewModel", "PIN $busqueda validado exitosamente en Firestore")
-                            onResultado?.invoke(true)
-                        } else {
-                            // 2. Si no coincide por PIN, buscar por campo 'qrToken'
-                            firestore.collection("vinculaciones")
-                                .whereEqualTo("qrToken", busqueda)
-                                .whereEqualTo("activo", true)
-                                .get()
-                                .addOnSuccessListener { qrSnapshots ->
-                                    if (qrSnapshots != null && !qrSnapshots.isEmpty) {
-                                        _estadoVinculacion.value = "Vinculación Exitosa"
-                                        Log.i("HotelViewModel", "QR Token validado exitosamente en Firestore")
-                                        onResultado?.invoke(true)
-                                    } else {
-                                        _estadoVinculacion.value = "Token o PIN no encontrado o inactivo"
-                                        Log.w("HotelViewModel", "Token/PIN no válido en Firestore: $busqueda")
-                                        onResultado?.invoke(false)
-                                    }
-                                }
-                                .addOnFailureListener { e ->
-                                    Log.e("HotelViewModel", "Error al consultar vinculaciones por QR: ${e.message}", e)
-                                    _estadoVinculacion.value = "Error al validar token"
-                                    onResultado?.invoke(false)
-                                }
-                        }
-                    }
-                    .addOnFailureListener { e ->
-                        Log.e("HotelViewModel", "Error al consultar vinculaciones por PIN: ${e.message}", e)
-                        _estadoVinculacion.value = "Error al validar token"
-                        onResultado?.invoke(false)
-                    }
-            } catch (e: Exception) {
-                Log.e("HotelViewModel", "Excepción al validar token en Firestore: ${e.message}", e)
-                _estadoVinculacion.value = "Error de conexión"
-                onResultado?.invoke(false)
+// 2. DISPOSITIVO NUEVO: Valida el PIN para poder entrar al sistema
+fun validarToken(pinIngresado: String, onVinculado: () -> Unit) {
+    val pinLimpio = pinIngresado.trim()
+    if (pinLimpio.length != 6) {
+        _estadoVinculacion.value = "Ingresa un PIN válido de 6 dígitos"
+        return
+    }
+
+    firestore.collection("vinculaciones").document(pinLimpio)
+        .get()
+        .addOnSuccessListener { document ->
+            if (document.exists() && document.getBoolean("activo") == true) {
+                _estadoVinculacion.value = "Vinculación Exitosa"
+                onVinculado() // Da acceso a la interfaz principal de la app
+            } else {
+                _estadoVinculacion.value = "PIN inválido, inactivo o revocado por Gerencia"
             }
         }
-    }
+        .addOnFailureListener { e ->
+            _estadoVinculacion.value = "Error de red: ${e.localizedMessage}"
+        }
+}
+
+// 3. GERENTE: Revoca el acceso de un dispositivo de inmediato (Bloqueo por robo/pérdida)
+fun revocarDispositivo(pinDispositivo: String) {
+    firestore.collection("vinculaciones").document(pinDispositivo)
+        .update("activo", false)
+        .addOnSuccessListener {
+            _estadoVinculacion.value = "Dispositivo bloqueado y sesión eliminada con éxito"
+        }
+        .addOnFailureListener { e ->
+            _estadoVinculacion.value = "Error al bloquear dispositivo: ${e.localizedMessage}"
+        }
+}
+
+// 4. MODO ESPEJO SEGURO: Una vez dentro, escucha cambios SOLO si el token sigue activo
+fun iniciarEscuchaEspejoSeguro(pinSesion: String) {
+    firestore.collection("vinculaciones").document(pinSesion)
+        .addSnapshotListener { snapshot, e ->
+            if (e != null) {
+                Log.e("HotelViewModel", "Error en espejo seguro", e)
+                return@addSnapshotListener
+            }
+
+            if (snapshot != null && snapshot.exists()) {
+                val activo = snapshot.getBoolean("activo") ?: false
+                if (!activo) {
+                    // ¡ALERTA DE SEGURIDAD! El gerente revocó este dispositivo
+                    _estadoVinculacion.value = "ACCESO REVOCADO: Sesión cerrada por seguridad"
+                    // Aquí puedes forzar el cierre de sesión o mandar al usuario al login
+                    return@addSnapshotListener
+                }
+                val accion = snapshot.getString("ultimaAccion") ?: ""
+                _estadoVinculacion.value = "Sincronizado: $accion"
+            } else {
+                _estadoVinculacion.value = "Sesión no encontrada en el servidor"
+            }
+        }
+}
+
 
     fun limpiarEstadoVinculacion() {
         _estadoVinculacion.value = null
