@@ -1221,7 +1221,7 @@ class HotelViewModel(application: Application) : AndroidViewModel(application) {
 // --- SISTEMA DE SEGURIDAD, VINCULACIÓN Y CONTROL DE SESIONES ---
 
 // 1. GERENTE: Genera un PIN de acceso seguro
-fun generarTokenVinculacion() {
+
     val nuevoPin = (100000..999999).random().toString()
     val tokenData = mapOf(
         "pin" to nuevoPin,
