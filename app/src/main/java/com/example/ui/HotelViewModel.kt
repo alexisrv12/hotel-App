@@ -1179,129 +1179,81 @@ class HotelViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    /**
-     * Genera un nuevo token de vinculación con un PIN aleatorio de 6 dígitos
-     * y un string aleatorio para el código QR. Guarda el objeto en la colección
-     * "vinculaciones" de Firestore y actualiza el StateFlow tokenVinculacion.
-     */
+        // --- VARIABLES DE ESTADO ---
+    private val _estadoVinculacion = MutableStateFlow<String?>(null)
+    val estadoVinculacion: StateFlow<String?> = _estadoVinculacion
+
+    private val _tokenVinculacion = MutableStateFlow<String?>(null)
+    val tokenVinculacion: StateFlow<String?> = _tokenVinculacion
+
     fun generarTokenVinculacion() {
         val nuevoPin = (100000..999999).random().toString()
-        val nuevoQrToken = "TOKEN-QR-${UUID.randomUUID().toString().replace("-", "").take(12).uppercase()}-${System.currentTimeMillis()}"
+        val tokenData = mapOf(
+            "pin" to nuevoPin,
+            "activo" to true,
+            "timestamp" to System.currentTimeMillis()
+        )
 
-        viewModelScope.launch {
-            try {
-                ensureFirebaseInitialized()
-                val token = VinculacionToken(
-                    pin = nuevoPin,
-                    qrToken = nuevoQrToken,
-                    fechaCreacion = System.currentTimeMillis(),
-                    activo = true
-                )
-                val docRef = firestore.collection("vinculaciones").document()
-                val tokenConId = token.copy(id = docRef.id)
-
-                docRef.set(tokenConId)
-                    .addOnSuccessListener {
-                        Log.d("HotelViewModel", "Token de vinculación guardado en Firestore: ${docRef.id}")
-                        // Actualizar UI SOLO si fue exitoso
-                        _tokenVinculacion.value = tokenConId
-                        _estadoVinculacion.value = "Vinculación Exitosa" 
-                    }
-                    .addOnFailureListener { e ->
-                        Log.e("HotelViewModel", "Error al guardar token: ${e.message}", e)
-                        // MOSTRAR EL ERROR REAL EN PANTALLA
-                        _estadoVinculacion.value = "Error Firebase: ${e.localizedMessage}"
-                    }
-            } catch (e: Exception) {
-                Log.e("HotelViewModel", "Error al generar token de vinculación: ${e.message}", e)
-                _estadoVinculacion.value = "Error al generar token: ${e.message}"
+        firestore.collection("vinculaciones").document(nuevoPin)
+            .set(tokenData)
+            .addOnSuccessListener {
+                _tokenVinculacion.value = nuevoPin
+                _estadoVinculacion.value = "PIN Generado: $nuevoPin"
             }
-        }
-    }
-// --- SISTEMA DE SEGURIDAD, VINCULACIÓN Y CONTROL DE SESIONES ---
-
-// 1. GERENTE: Genera un PIN de acceso seguro
-
-    val nuevoPin = (100000..999999).random().toString()
-    val tokenData = mapOf(
-        "pin" to nuevoPin,
-        "activo" to true,
-        "timestamp" to System.currentTimeMillis()
-    )
-
-    firestore.collection("vinculaciones").document(nuevoPin)
-        .set(tokenData)
-        .addOnSuccessListener {
-            _tokenVinculacion.value = nuevoPin
-            _estadoVinculacion.value = "PIN Generado: $nuevoPin"
-        }
-        .addOnFailureListener { e ->
-            _estadoVinculacion.value = "Error al generar PIN: ${e.localizedMessage}"
-        }
-}
-
-// 2. DISPOSITIVO NUEVO: Valida el PIN para poder entrar al sistema
-fun validarToken(pinIngresado: String, onVinculado: () -> Unit) {
-    val pinLimpio = pinIngresado.trim()
-    if (pinLimpio.length != 6) {
-        _estadoVinculacion.value = "Ingresa un PIN válido de 6 dígitos"
-        return
+            .addOnFailureListener { e ->
+                _estadoVinculacion.value = "Error al generar PIN: ${e.localizedMessage}"
+            }
     }
 
-    firestore.collection("vinculaciones").document(pinLimpio)
-        .get()
-        .addOnSuccessListener { document ->
-            if (document.exists() && document.getBoolean("activo") == true) {
-                _estadoVinculacion.value = "Vinculación Exitosa"
-                onVinculado() // Da acceso a la interfaz principal de la app
-            } else {
-                _estadoVinculacion.value = "PIN inválido, inactivo o revocado por Gerencia"
-            }
+    fun validarToken(pinIngresado: String, onVinculado: () -> Unit) {
+        val pinLimpio = pinIngresado.trim()
+        if (pinLimpio.length != 6) {
+            _estadoVinculacion.value = "Ingresa un PIN válido de 6 dígitos"
+            return
         }
-        .addOnFailureListener { e ->
-            _estadoVinculacion.value = "Error de red: ${e.localizedMessage}"
-        }
-}
 
-// 3. GERENTE: Revoca el acceso de un dispositivo de inmediato (Bloqueo por robo/pérdida)
-fun revocarDispositivo(pinDispositivo: String) {
-    firestore.collection("vinculaciones").document(pinDispositivo)
-        .update("activo", false)
-        .addOnSuccessListener {
-            _estadoVinculacion.value = "Dispositivo bloqueado y sesión eliminada con éxito"
-        }
-        .addOnFailureListener { e ->
-            _estadoVinculacion.value = "Error al bloquear dispositivo: ${e.localizedMessage}"
-        }
-}
-
-// 4. MODO ESPEJO SEGURO: Una vez dentro, escucha cambios SOLO si el token sigue activo
-fun iniciarEscuchaEspejoSeguro(pinSesion: String) {
-    firestore.collection("vinculaciones").document(pinSesion)
-        .addSnapshotListener { snapshot, e ->
-            if (e != null) {
-                Log.e("HotelViewModel", "Error en espejo seguro", e)
-                return@addSnapshotListener
-            }
-
-            if (snapshot != null && snapshot.exists()) {
-                val activo = snapshot.getBoolean("activo") ?: false
-                if (!activo) {
-                    // ¡ALERTA DE SEGURIDAD! El gerente revocó este dispositivo
-                    _estadoVinculacion.value = "ACCESO REVOCADO: Sesión cerrada por seguridad"
-                    // Aquí puedes forzar el cierre de sesión o mandar al usuario al login
-                    return@addSnapshotListener
+        firestore.collection("vinculaciones").document(pinLimpio)
+            .get()
+            .addOnSuccessListener { document ->
+                if (document.exists() && document.getBoolean("activo") == true) {
+                    _estadoVinculacion.value = "Vinculación Exitosa"
+                    onVinculado()
+                } else {
+                    _estadoVinculacion.value = "PIN inválido, inactivo o revocado por Gerencia"
                 }
-                val accion = snapshot.getString("ultimaAccion") ?: ""
-                _estadoVinculacion.value = "Sincronizado: $accion"
-            } else {
-                _estadoVinculacion.value = "Sesión no encontrada en el servidor"
             }
-        }
-}
+            .addOnFailureListener { e ->
+                _estadoVinculacion.value = "Error de red: ${e.localizedMessage}"
+            }
+    }
 
+    fun revocarDispositivo(pinDispositivo: String) {
+        firestore.collection("vinculaciones").document(pinDispositivo)
+            .update("activo", false)
+            .addOnSuccessListener {
+                _estadoVinculacion.value = "Dispositivo bloqueado y sesión eliminada con éxito"
+            }
+            .addOnFailureListener { e ->
+                _estadoVinculacion.value = "Error al bloquear dispositivo: ${e.localizedMessage}"
+            }
+    }
+
+    fun iniciarEscuchaEspejoSeguro(pinSesion: String) {
+        firestore.collection("vinculaciones").document(pinSesion)
+            .addSnapshotListener { snapshot, e ->
+                if (e != null) return@addSnapshotListener
+                if (snapshot != null && snapshot.exists()) {
+                    val activo = snapshot.getBoolean("activo") ?: false
+                    if (!activo) {
+                        _estadoVinculacion.value = "ACCESO REVOCADO: Sesión cerrada por seguridad"
+                        return@addSnapshotListener
+                    }
+                    val accion = snapshot.getString("ultimaAccion") ?: ""
+                    _estadoVinculacion.value = "Sincronizado: $accion"
+                }
+            }
+    }
 
     fun limpiarEstadoVinculacion() {
         _estadoVinculacion.value = null
     }
-}
