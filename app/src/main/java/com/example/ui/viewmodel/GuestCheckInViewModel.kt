@@ -1,12 +1,19 @@
 package com.example.ui.viewmodel
 
 import android.app.Application
+import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.data.dao.RoomDao
 import com.example.data.database.HotelDatabase
 import com.example.data.entities.RoomEntity
 import com.example.data.entities.RoomStatus
+import com.example.data.model.Habitacion
+import com.example.data.model.Room
+import com.google.firebase.Firebase
+import com.google.firebase.firestore.ListenerRegistration
+import com.google.firebase.firestore.SetOptions
+import com.google.firebase.firestore.firestore
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -16,7 +23,7 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
 /**
- * ViewModel managing guest check-ins and room status transitions in Room database.
+ * ViewModel managing guest check-ins and room status transitions in Room database and Firestore.
  */
 class GuestCheckInViewModel @JvmOverloads constructor(
     application: Application,
@@ -26,6 +33,11 @@ class GuestCheckInViewModel @JvmOverloads constructor(
     // Status filter: "ALL", "DISPONIBLE", "OCUPADA", "PENDIENTE_LIMPIEZA"
     private val _selectedFilter = MutableStateFlow("ALL")
     val selectedFilter: StateFlow<String> = _selectedFilter.asStateFlow()
+
+    // Firestore real-time room list
+    private val _firestoreRooms = MutableStateFlow<List<Room>>(emptyList())
+    val firestoreRooms: StateFlow<List<Room>> = _firestoreRooms.asStateFlow()
+    private var firestoreListener: ListenerRegistration? = null
 
     // All rooms Flow from Room DB
     val allRooms: StateFlow<List<RoomEntity>> = roomDao.getAllRooms().stateIn(
@@ -53,12 +65,66 @@ class GuestCheckInViewModel @JvmOverloads constructor(
     private val _userMessage = MutableStateFlow<String?>(null)
     val userMessage: StateFlow<String?> = _userMessage.asStateFlow()
 
+    init {
+        iniciarSincronizacionFirestore()
+    }
+
     fun setFilter(filter: String) {
         _selectedFilter.value = filter
     }
 
+    fun iniciarSincronizacionFirestore() {
+        try {
+            firestoreListener?.remove()
+            firestoreListener = Firebase.firestore.collection("habitaciones")
+                .addSnapshotListener { snapshot, error ->
+                    if (error != null) {
+                        Log.w("GuestCheckInVM", "Error en snapshotListener habitaciones: ${error.message}")
+                        return@addSnapshotListener
+                    }
+                    if (snapshot != null) {
+                        val lista = snapshot.documents.mapNotNull { doc ->
+                            try {
+                                val id = doc.id
+                                val numero = doc.getString("numero") ?: doc.getString("roomNumber") ?: doc.id
+                                val estado = doc.getString("estado") ?: doc.getString("status") ?: "Disponible"
+                                val precio = doc.getDouble("precio")
+                                    ?: doc.getDouble("price")
+                                    ?: (doc.get("precio") as? Number)?.toDouble()
+                                    ?: 150.0
+                                val tipo = doc.getString("roomType") ?: "Estándar"
+                                val cliente = doc.getString("clientName")
+                                val dpi = doc.getString("clientDpi")
+                                val checkInTs = doc.getLong("checkInTimestamp") ?: 0L
+                                val checkOutTs = doc.getLong("checkOutTimestamp") ?: 0L
+                                val notas = doc.getString("notes")
+                                Room(
+                                    id = id,
+                                    roomNumber = numero,
+                                    status = estado,
+                                    price = precio,
+                                    roomType = tipo,
+                                    clientName = cliente,
+                                    clientDpi = dpi,
+                                    checkInTimestamp = checkInTs,
+                                    checkOutTimestamp = checkOutTs,
+                                    notes = notas
+                                )
+                            } catch (e: Exception) {
+                                null
+                            }
+                        }
+                        _firestoreRooms.value = lista
+                    }
+                }
+        } catch (e: Exception) {
+            Log.e("GuestCheckInVM", "Error al iniciar listener Firestore: ${e.message}", e)
+        }
+    }
+
     /**
-     * Executes check-in, transitioning a room's status from 'Available' (DISPONIBLE) to 'Occupied' (OCUPADA) in the Room database.
+     * Executes check-in, transitioning a room's status from 'Available' (DISPONIBLE) to 'Occupied' (OCUPADA)
+     * and records check-in timestamp in Firestore as well as local Room database.
      */
     fun checkInGuest(
         roomId: Long,
@@ -101,6 +167,36 @@ class GuestCheckInViewModel @JvmOverloads constructor(
             )
 
             roomDao.updateRoom(updatedRoom)
+
+            // Registro en Firestore con timestamp de check-in
+            try {
+                val firestoreData = hashMapOf<String, Any>(
+                    "numero" to existingRoom.roomNumber,
+                    "roomNumber" to existingRoom.roomNumber,
+                    "estado" to "Ocupada",
+                    "status" to "Occupied",
+                    "clientName" to clientName,
+                    "clientDpi" to clientDpi,
+                    "guestCount" to guestCount,
+                    "rateName" to rateName,
+                    "price" to (if (priceCharged > 0.0) priceCharged else existingRoom.nightlyRate),
+                    "checkInTimestamp" to now,
+                    "checkOutTimestamp" to checkOutTime,
+                    "receptionistName" to receptionistName,
+                    "notes" to (notes ?: "")
+                )
+                Firebase.firestore.collection("habitaciones").document(existingRoom.roomNumber)
+                    .set(firestoreData, SetOptions.merge())
+                    .addOnSuccessListener {
+                        Log.d("GuestCheckInVM", "Check-in registrado en Firestore para Habitación ${existingRoom.roomNumber}")
+                    }
+                    .addOnFailureListener { e ->
+                        Log.w("GuestCheckInVM", "Error al actualizar check-in en Firestore: ${e.message}")
+                    }
+            } catch (e: Exception) {
+                Log.e("GuestCheckInVM", "Excepción al registrar check-in en Firestore: ${e.message}", e)
+            }
+
             _userMessage.value = "¡Check-In exitoso en Habitación ${existingRoom.roomNumber}! Estado actualizado a Ocupada."
         }
     }
@@ -116,6 +212,20 @@ class GuestCheckInViewModel @JvmOverloads constructor(
                 cleaningStartTimeMillis = System.currentTimeMillis()
             )
             roomDao.updateRoom(updated)
+
+            try {
+                Firebase.firestore.collection("habitaciones").document(room.roomNumber)
+                    .set(
+                        mapOf(
+                            "estado" to "Limpieza",
+                            "status" to "Cleaning"
+                        ),
+                        SetOptions.merge()
+                    )
+            } catch (e: Exception) {
+                Log.w("GuestCheckInVM", "Error al actualizar salida en Firestore: ${e.message}")
+            }
+
             _userMessage.value = "Check-Out registrado para Habitación ${room.roomNumber}. Pasa a Limpieza."
         }
     }
@@ -134,12 +244,28 @@ class GuestCheckInViewModel @JvmOverloads constructor(
                 cleaningFinishedBy = finishedBy
             )
             roomDao.updateRoom(updated)
+
+            try {
+                Firebase.firestore.collection("habitaciones").document(room.roomNumber)
+                    .set(
+                        mapOf(
+                            "estado" to "Disponible",
+                            "status" to "Available",
+                            "clientName" to "",
+                            "clientDpi" to ""
+                        ),
+                        SetOptions.merge()
+                    )
+            } catch (e: Exception) {
+                Log.w("GuestCheckInVM", "Error al actualizar limpieza en Firestore: ${e.message}")
+            }
+
             _userMessage.value = "Habitación ${room.roomNumber} limpia y disponible nuevamente."
         }
     }
 
     /**
-     * Adds a new room to the database.
+     * Adds a new room to the database and Firestore.
      */
     fun addNewRoom(roomNumber: String, roomType: String = "Estándar", nightlyRate: Double = 150.0) {
         viewModelScope.launch {
@@ -151,8 +277,30 @@ class GuestCheckInViewModel @JvmOverloads constructor(
                 sortOrder = (allRooms.value.maxOfOrNull { it.sortOrder } ?: 0) + 1
             )
             roomDao.insertRoom(newRoom)
+
+            try {
+                val firestoreData = hashMapOf<String, Any>(
+                    "numero" to roomNumber,
+                    "roomNumber" to roomNumber,
+                    "estado" to "Disponible",
+                    "status" to "Available",
+                    "precio" to nightlyRate,
+                    "price" to nightlyRate,
+                    "roomType" to roomType
+                )
+                Firebase.firestore.collection("habitaciones").document(roomNumber)
+                    .set(firestoreData, SetOptions.merge())
+            } catch (e: Exception) {
+                Log.w("GuestCheckInVM", "Error al agregar habitación en Firestore: ${e.message}")
+            }
+
             _userMessage.value = "Habitación $roomNumber agregada con éxito."
         }
+    }
+
+    override fun onCleared() {
+        super.onCleared()
+        firestoreListener?.remove()
     }
 
     fun clearUserMessage() {

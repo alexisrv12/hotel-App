@@ -26,6 +26,7 @@ import com.example.data.entities.SupplyEntity
 import com.example.data.entities.TimeRateEntity
 import com.example.data.entities.UserEntity
 import com.example.data.model.Habitacion
+import com.example.data.model.Room
 import com.example.data.repository.HotelRepository
 import com.example.data.repository.SessionDataStoreRepository
 import com.example.data.repository.UserSession
@@ -121,6 +122,8 @@ class HotelViewModel(application: Application) : AndroidViewModel(application) {
     // Estado de habitaciones en tiempo real con Firestore
     private val _habitaciones = MutableStateFlow<List<Habitacion>>(emptyList())
     val habitaciones: StateFlow<List<Habitacion>> = _habitaciones.asStateFlow()
+    private val _firestoreRooms = MutableStateFlow<List<Room>>(emptyList())
+    val firestoreRooms: StateFlow<List<Room>> = _firestoreRooms.asStateFlow()
     private var habitacionesListener: ListenerRegistration? = null
 
     // Live Clock for Room Timers
@@ -274,26 +277,53 @@ class HotelViewModel(application: Application) : AndroidViewModel(application) {
                         return@addSnapshotListener
                     }
                     if (snapshot != null) {
-                        val lista = snapshot.documents.mapNotNull { doc ->
+                        val listaHabitaciones = mutableListOf<Habitacion>()
+                        val listaRooms = mutableListOf<Room>()
+                        for (doc in snapshot.documents) {
                             try {
                                 val id = doc.id
-                                val numero = doc.getString("numero") ?: doc.id
-                                val estado = doc.getString("estado") ?: "Disponible"
+                                val numero = doc.getString("numero") ?: doc.getString("roomNumber") ?: doc.id
+                                val estado = doc.getString("estado") ?: doc.getString("status") ?: "Disponible"
                                 val precio = doc.getDouble("precio")
+                                    ?: doc.getDouble("price")
                                     ?: (doc.get("precio") as? Number)?.toDouble()
-                                    ?: 0.0
-                                Habitacion(
-                                    id = id,
-                                    numero = numero,
-                                    estado = estado,
-                                    precio = precio
+                                    ?: (doc.get("price") as? Number)?.toDouble()
+                                    ?: 150.0
+                                val tipo = doc.getString("roomType") ?: "Estándar"
+                                val cliente = doc.getString("clientName")
+                                val dpi = doc.getString("clientDpi")
+                                val checkInTs = doc.getLong("checkInTimestamp") ?: 0L
+                                val checkOutTs = doc.getLong("checkOutTimestamp") ?: 0L
+                                val notas = doc.getString("notes")
+
+                                listaHabitaciones.add(
+                                    Habitacion(
+                                        id = id,
+                                        numero = numero,
+                                        estado = estado,
+                                        precio = precio
+                                    )
+                                )
+                                listaRooms.add(
+                                    Room(
+                                        id = id,
+                                        roomNumber = numero,
+                                        status = estado,
+                                        price = precio,
+                                        roomType = tipo,
+                                        clientName = cliente,
+                                        clientDpi = dpi,
+                                        checkInTimestamp = checkInTs,
+                                        checkOutTimestamp = checkOutTs,
+                                        notes = notas
+                                    )
                                 )
                             } catch (e: Exception) {
                                 Log.w("HotelViewModel", "Error al deserializar habitación ${doc.id}: ${e.message}")
-                                doc.toObject(Habitacion::class.java)?.copy(id = doc.id)
                             }
                         }
-                        _habitaciones.value = lista
+                        _habitaciones.value = listaHabitaciones
+                        _firestoreRooms.value = listaRooms
                     }
                 }
         } catch (e: Exception) {
@@ -638,6 +668,36 @@ class HotelViewModel(application: Application) : AndroidViewModel(application) {
             val room = rooms.value.find { it.id == roomId }
             val roomNum = room?.roomNumber ?: roomId.toString()
             val hours = (rate.durationMinutes / 60).toInt().coerceAtLeast(1)
+            val now = System.currentTimeMillis()
+            val checkOutTs = now + rate.durationMinutes * 60 * 1000L
+
+            // Sincronización en tiempo real con Firestore
+            try {
+                ensureFirebaseInitialized()
+                val firestoreData = hashMapOf<String, Any>(
+                    "numero" to roomNum,
+                    "roomNumber" to roomNum,
+                    "estado" to "Ocupada",
+                    "status" to "Occupied",
+                    "clientName" to clientName,
+                    "clientDpi" to (clientDpi ?: ""),
+                    "checkInTimestamp" to now,
+                    "checkOutTimestamp" to checkOutTs,
+                    "price" to rate.price,
+                    "notes" to (notes ?: "")
+                )
+                Firebase.firestore.collection("habitaciones").document(roomNum)
+                    .set(firestoreData, SetOptions.merge())
+                    .addOnSuccessListener {
+                        Log.d("HotelViewModel", "Check-in sincronizado con éxito en Firestore para Habitación $roomNum")
+                    }
+                    .addOnFailureListener { e ->
+                        Log.w("HotelViewModel", "Error al sincronizar check-in en Firestore: ${e.message}")
+                    }
+            } catch (e: Exception) {
+                Log.e("HotelViewModel", "Error en checkInRoom Firestore: ${e.message}", e)
+            }
+
             HotelNotificationHelper.sendGuestCheckInAlert(
                 context = getApplication(),
                 roomNumber = roomNum,
@@ -689,17 +749,135 @@ class HotelViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     // --- MANAGER CRUD ACTIONS ---
-    fun addRoom(roomNumber: String) {
+    fun addRoom(roomNumber: String, roomType: String = "Estándar", nightlyRate: Double = 150.0) {
         viewModelScope.launch {
             repository.addRoom(roomNumber)
+            try {
+                ensureFirebaseInitialized()
+                val firestoreRoom = hashMapOf<String, Any>(
+                    "numero" to roomNumber,
+                    "roomNumber" to roomNumber,
+                    "estado" to "Disponible",
+                    "status" to "Available",
+                    "precio" to nightlyRate,
+                    "price" to nightlyRate,
+                    "roomType" to roomType
+                )
+                Firebase.firestore.collection("habitaciones").document(roomNumber)
+                    .set(firestoreRoom, SetOptions.merge())
+                    .addOnSuccessListener {
+                        Log.d("HotelViewModel", "Habitación $roomNumber guardada en Firestore")
+                    }
+                    .addOnFailureListener { e ->
+                        Log.w("HotelViewModel", "Error al guardar habitación en Firestore: ${e.message}")
+                    }
+            } catch (e: Exception) {
+                Log.e("HotelViewModel", "Error al registrar habitación en Firestore: ${e.message}", e)
+            }
             _userMessage.value = "Habitación $roomNumber creada."
+        }
+    }
+
+    fun addRoomFirestore(room: Room) {
+        viewModelScope.launch {
+            repository.addRoom(room.roomNumber)
+            try {
+                ensureFirebaseInitialized()
+                val docId = if (room.id.isNotBlank()) room.id else room.roomNumber
+                val firestoreRoom = hashMapOf<String, Any>(
+                    "numero" to room.roomNumber,
+                    "roomNumber" to room.roomNumber,
+                    "estado" to room.status,
+                    "status" to room.status,
+                    "precio" to room.price,
+                    "price" to room.price,
+                    "roomType" to room.roomType,
+                    "clientName" to (room.clientName ?: ""),
+                    "clientDpi" to (room.clientDpi ?: ""),
+                    "checkInTimestamp" to room.checkInTimestamp,
+                    "checkOutTimestamp" to room.checkOutTimestamp,
+                    "notes" to (room.notes ?: "")
+                )
+                Firebase.firestore.collection("habitaciones").document(docId)
+                    .set(firestoreRoom, SetOptions.merge())
+                    .addOnSuccessListener {
+                        Log.d("HotelViewModel", "Habitación ${room.roomNumber} guardada en Firestore")
+                    }
+                    .addOnFailureListener { e ->
+                        Log.w("HotelViewModel", "Error Firestore addRoom: ${e.message}")
+                    }
+            } catch (e: Exception) {
+                Log.e("HotelViewModel", "Error addRoomFirestore: ${e.message}", e)
+            }
+            _userMessage.value = "Habitación ${room.roomNumber} guardada."
         }
     }
 
     fun updateRoom(room: RoomEntity) {
         viewModelScope.launch {
             repository.updateRoomDetails(room)
+            try {
+                ensureFirebaseInitialized()
+                val firestoreRoom = hashMapOf<String, Any>(
+                    "numero" to room.roomNumber,
+                    "roomNumber" to room.roomNumber,
+                    "estado" to if (room.isAvailable) "Disponible" else if (room.isOccupied) "Ocupada" else "Limpieza",
+                    "status" to room.status,
+                    "precio" to room.nightlyRate,
+                    "price" to room.nightlyRate,
+                    "roomType" to room.roomType,
+                    "clientName" to (room.clientName ?: ""),
+                    "clientDpi" to (room.clientDpi ?: ""),
+                    "checkInTimestamp" to (room.checkInTimeMillis ?: 0L),
+                    "checkOutTimestamp" to (room.checkOutTimeMillis ?: 0L),
+                    "notes" to (room.notes ?: "")
+                )
+                Firebase.firestore.collection("habitaciones").document(room.roomNumber)
+                    .set(firestoreRoom, SetOptions.merge())
+                    .addOnSuccessListener {
+                        Log.d("HotelViewModel", "Habitación ${room.roomNumber} actualizada en Firestore")
+                    }
+                    .addOnFailureListener { e ->
+                        Log.w("HotelViewModel", "Error al actualizar habitación en Firestore: ${e.message}")
+                    }
+            } catch (e: Exception) {
+                Log.e("HotelViewModel", "Error al actualizar habitación en Firestore: ${e.message}", e)
+            }
             _userMessage.value = "Habitación actualizada."
+        }
+    }
+
+    fun updateRoomFirestore(room: Room) {
+        viewModelScope.launch {
+            try {
+                ensureFirebaseInitialized()
+                val docId = if (room.id.isNotBlank()) room.id else room.roomNumber
+                val firestoreRoom = hashMapOf<String, Any>(
+                    "numero" to room.roomNumber,
+                    "roomNumber" to room.roomNumber,
+                    "estado" to room.status,
+                    "status" to room.status,
+                    "precio" to room.price,
+                    "price" to room.price,
+                    "roomType" to room.roomType,
+                    "clientName" to (room.clientName ?: ""),
+                    "clientDpi" to (room.clientDpi ?: ""),
+                    "checkInTimestamp" to room.checkInTimestamp,
+                    "checkOutTimestamp" to room.checkOutTimestamp,
+                    "notes" to (room.notes ?: "")
+                )
+                Firebase.firestore.collection("habitaciones").document(docId)
+                    .set(firestoreRoom, SetOptions.merge())
+                    .addOnSuccessListener {
+                        Log.d("HotelViewModel", "Habitación ${room.roomNumber} actualizada en Firestore")
+                    }
+                    .addOnFailureListener { e ->
+                        Log.w("HotelViewModel", "Error al actualizar habitación en Firestore: ${e.message}")
+                    }
+            } catch (e: Exception) {
+                Log.e("HotelViewModel", "Error updateRoomFirestore: ${e.message}", e)
+            }
+            _userMessage.value = "Habitación ${room.roomNumber} actualizada."
         }
     }
 
@@ -708,6 +886,13 @@ class HotelViewModel(application: Application) : AndroidViewModel(application) {
             val target = rooms.value.find { it.id == roomId }
             if (target != null) {
                 repository.updateRoomDetails(target.copy(status = newStatus))
+                val estadoEspanol = when (newStatus) {
+                    RoomStatus.DISPONIBLE -> "Disponible"
+                    RoomStatus.OCUPADA -> "Ocupada"
+                    RoomStatus.PENDIENTE_LIMPIEZA -> "Limpieza"
+                    else -> newStatus
+                }
+                actualizarEstadoHabitacion(target.roomNumber, estadoEspanol)
                 _userMessage.value = "Estado de habitación ${target.roomNumber} cambiado a $newStatus"
             }
         }
@@ -715,7 +900,30 @@ class HotelViewModel(application: Application) : AndroidViewModel(application) {
 
     fun deleteRoom(id: Long) {
         viewModelScope.launch {
+            val target = rooms.value.find { it.id == id }
             repository.deleteRoom(id)
+            if (target != null) {
+                deleteRoomFirestore(target.roomNumber)
+            }
+            _userMessage.value = "Habitación eliminada."
+        }
+    }
+
+    fun deleteRoomFirestore(roomNumberOrId: String) {
+        viewModelScope.launch {
+            try {
+                ensureFirebaseInitialized()
+                Firebase.firestore.collection("habitaciones").document(roomNumberOrId)
+                    .delete()
+                    .addOnSuccessListener {
+                        Log.d("HotelViewModel", "Habitación $roomNumberOrId eliminada de Firestore")
+                    }
+                    .addOnFailureListener { e ->
+                        Log.w("HotelViewModel", "Error al eliminar habitación de Firestore: ${e.message}")
+                    }
+            } catch (e: Exception) {
+                Log.e("HotelViewModel", "Error deleteRoomFirestore: ${e.message}", e)
+            }
             _userMessage.value = "Habitación eliminada."
         }
     }
@@ -1179,52 +1387,82 @@ class HotelViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-        // --- VARIABLES DE ESTADO ---
-    private val _estadoVinculacion = MutableStateFlow<String?>(null)
-    val estadoVinculacion: StateFlow<String?> = _estadoVinculacion
-
-    private val _tokenVinculacion = MutableStateFlow<String?>(null)
-    val tokenVinculacion: StateFlow<String?> = _tokenVinculacion
-
+        // --- MÉTODOS DE VINCULACIÓN EN FIRESTORE ---
     fun generarTokenVinculacion() {
         val nuevoPin = (100000..999999).random().toString()
-        val tokenData = mapOf(
-            "pin" to nuevoPin,
-            "activo" to true,
-            "timestamp" to System.currentTimeMillis()
-        )
+        val nuevoQrToken = "TOKEN-QR-${UUID.randomUUID().toString().replace("-", "").take(12).uppercase()}-${System.currentTimeMillis()}"
 
-        firestore.collection("vinculaciones").document(nuevoPin)
-            .set(tokenData)
-            .addOnSuccessListener {
-                _tokenVinculacion.value = nuevoPin
-                _estadoVinculacion.value = "PIN Generado: $nuevoPin"
+        viewModelScope.launch {
+            try {
+                ensureFirebaseInitialized()
+                val token = VinculacionToken(
+                    pin = nuevoPin,
+                    qrToken = nuevoQrToken,
+                    fechaCreacion = System.currentTimeMillis(),
+                    activo = true
+                )
+                val docRef = firestore.collection("vinculaciones").document(nuevoPin)
+                val tokenConId = token.copy(id = docRef.id)
+
+                docRef.set(tokenConId)
+                    .addOnSuccessListener {
+                        Log.d("HotelViewModel", "Token de vinculación guardado en Firestore: ${docRef.id}")
+                        _tokenVinculacion.value = tokenConId
+                        _estadoVinculacion.value = "PIN Generado: $nuevoPin"
+                    }
+                    .addOnFailureListener { e ->
+                        Log.e("HotelViewModel", "Error al guardar token: ${e.message}", e)
+                        _estadoVinculacion.value = "Error Firebase: ${e.localizedMessage}"
+                    }
+            } catch (e: Exception) {
+                Log.e("HotelViewModel", "Error al generar token de vinculación: ${e.message}", e)
+                _estadoVinculacion.value = "Error al generar token: ${e.message}"
             }
-            .addOnFailureListener { e ->
-                _estadoVinculacion.value = "Error al generar PIN: ${e.localizedMessage}"
-            }
+        }
     }
 
-    fun validarToken(pinIngresado: String, onVinculado: () -> Unit) {
-        val pinLimpio = pinIngresado.trim()
-        if (pinLimpio.length != 6) {
-            _estadoVinculacion.value = "Ingresa un PIN válido de 6 dígitos"
+    fun validarToken(pinOQr: String, onVinculado: (() -> Unit)? = null) {
+        val busqueda = pinOQr.trim()
+        if (busqueda.isBlank()) {
+            _estadoVinculacion.value = "Ingresa un PIN válido de 6 dígitos o Token QR"
             return
         }
 
-        firestore.collection("vinculaciones").document(pinLimpio)
-            .get()
-            .addOnSuccessListener { document ->
-                if (document.exists() && document.getBoolean("activo") == true) {
-                    _estadoVinculacion.value = "Vinculación Exitosa"
-                    onVinculado()
-                } else {
-                    _estadoVinculacion.value = "PIN inválido, inactivo o revocado por Gerencia"
-                }
+        viewModelScope.launch {
+            try {
+                ensureFirebaseInitialized()
+                firestore.collection("vinculaciones").document(busqueda)
+                    .get()
+                    .addOnSuccessListener { document ->
+                        if (document.exists() && document.getBoolean("activo") == true) {
+                            _estadoVinculacion.value = "Vinculación Exitosa"
+                            onVinculado?.invoke()
+                        } else {
+                            // Buscar por campo 'qrToken' o 'pin' si no se guardó por document ID
+                            firestore.collection("vinculaciones")
+                                .whereEqualTo("qrToken", busqueda)
+                                .whereEqualTo("activo", true)
+                                .get()
+                                .addOnSuccessListener { qrSnapshots ->
+                                    if (qrSnapshots != null && !qrSnapshots.isEmpty) {
+                                        _estadoVinculacion.value = "Vinculación Exitosa"
+                                        onVinculado?.invoke()
+                                    } else {
+                                        _estadoVinculacion.value = "PIN o Token inválido, inactivo o revocado"
+                                    }
+                                }
+                                .addOnFailureListener { e ->
+                                    _estadoVinculacion.value = "Error de red: ${e.localizedMessage}"
+                                }
+                        }
+                    }
+                    .addOnFailureListener { e ->
+                        _estadoVinculacion.value = "Error de red: ${e.localizedMessage}"
+                    }
+            } catch (e: Exception) {
+                _estadoVinculacion.value = "Error de conexión: ${e.localizedMessage}"
             }
-            .addOnFailureListener { e ->
-                _estadoVinculacion.value = "Error de red: ${e.localizedMessage}"
-            }
+        }
     }
 
     fun revocarDispositivo(pinDispositivo: String) {
@@ -1257,3 +1495,4 @@ class HotelViewModel(application: Application) : AndroidViewModel(application) {
     fun limpiarEstadoVinculacion() {
         _estadoVinculacion.value = null
     }
+}

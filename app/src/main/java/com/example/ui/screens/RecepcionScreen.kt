@@ -76,6 +76,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableDoubleStateOf
 import androidx.compose.runtime.mutableIntStateOf
@@ -122,6 +123,12 @@ fun RecepcionScreen(
     val context = LocalContext.current
     val stayHistory by viewModel.stayHistory.collectAsStateWithLifecycle()
     val lowStockSupplies by viewModel.lowStockSupplies.collectAsStateWithLifecycle()
+    val firestoreRooms by viewModel.firestoreRooms.collectAsStateWithLifecycle()
+
+    LaunchedEffect(Unit) {
+        viewModel.iniciarSincronizacionHabitaciones()
+    }
+
     var selectedReceptionTab by remember { mutableIntStateOf(0) } // 0: Cuadrícula, 1: Calendario & Check-Ins
     var selectedFilter by remember { mutableStateOf("TODAS") }
     var searchQuery by remember { mutableStateOf("") }
@@ -137,13 +144,70 @@ fun RecepcionScreen(
     var selectedRoomForMaintenance by remember { mutableStateOf<String?>(null) }
     var activeInvoiceToShow by remember { mutableStateOf<InvoiceEntity?>(null) }
 
+    // Merge Room DB rooms with real-time Firestore room status and data
+    val displayRooms = remember(rooms, firestoreRooms) {
+        if (firestoreRooms.isEmpty()) {
+            rooms
+        } else {
+            val firestoreMap = firestoreRooms.associateBy { it.roomNumber.trim().lowercase() }
+            val mergedFromLocal = rooms.map { localRoom ->
+                val fsRoom = firestoreMap[localRoom.roomNumber.trim().lowercase()]
+                if (fsRoom != null) {
+                    val convertedStatus = when (fsRoom.status.uppercase()) {
+                        "DISPONIBLE", "AVAILABLE" -> RoomStatus.DISPONIBLE
+                        "OCUPADA", "OCCUPIED" -> RoomStatus.OCUPADA
+                        "LIMPIEZA", "CLEANING", "PENDIENTE_LIMPIEZA", "EN_LIMPIEZA" -> RoomStatus.PENDIENTE_LIMPIEZA
+                        else -> localRoom.status
+                    }
+                    localRoom.copy(
+                        status = convertedStatus,
+                        nightlyRate = if (fsRoom.price > 0.0) fsRoom.price else localRoom.nightlyRate,
+                        clientName = if (!fsRoom.clientName.isNullOrBlank()) fsRoom.clientName else localRoom.clientName,
+                        clientDpi = if (!fsRoom.clientDpi.isNullOrBlank()) fsRoom.clientDpi else localRoom.clientDpi,
+                        checkInTimeMillis = if (fsRoom.checkInTimestamp > 0L) fsRoom.checkInTimestamp else localRoom.checkInTimeMillis,
+                        checkOutTimeMillis = if (fsRoom.checkOutTimestamp > 0L) fsRoom.checkOutTimestamp else localRoom.checkOutTimeMillis,
+                        notes = if (!fsRoom.notes.isNullOrBlank()) fsRoom.notes else localRoom.notes
+                    )
+                } else {
+                    localRoom
+                }
+            }
+
+            // Also include any rooms that were added directly in Firestore
+            val localRoomNumbers = rooms.map { it.roomNumber.trim().lowercase() }.toSet()
+            val extraFromFirestore = firestoreRooms
+                .filter { it.roomNumber.trim().lowercase() !in localRoomNumbers }
+                .mapIndexed { idx, fs ->
+                    val convertedStatus = when (fs.status.uppercase()) {
+                        "DISPONIBLE", "AVAILABLE" -> RoomStatus.DISPONIBLE
+                        "OCUPADA", "OCCUPIED" -> RoomStatus.OCUPADA
+                        "LIMPIEZA", "CLEANING", "PENDIENTE_LIMPIEZA", "EN_LIMPIEZA" -> RoomStatus.PENDIENTE_LIMPIEZA
+                        else -> RoomStatus.DISPONIBLE
+                    }
+                    RoomEntity(
+                        id = (10000L + idx),
+                        roomNumber = fs.roomNumber,
+                        roomType = fs.roomType,
+                        status = convertedStatus,
+                        nightlyRate = fs.price,
+                        clientName = fs.clientName,
+                        clientDpi = fs.clientDpi,
+                        checkInTimeMillis = if (fs.checkInTimestamp > 0L) fs.checkInTimestamp else 0L,
+                        checkOutTimeMillis = if (fs.checkOutTimestamp > 0L) fs.checkOutTimestamp else 0L,
+                        notes = fs.notes
+                    )
+                }
+            mergedFromLocal + extraFromFirestore
+        }
+    }
+
     // Calculate Summary Counts
-    val countAvailable = rooms.count { it.status == RoomStatus.DISPONIBLE }
-    val countOccupied = rooms.count { it.status == RoomStatus.OCUPADA }
-    val countCleaning = rooms.count { it.status == RoomStatus.PENDIENTE_LIMPIEZA || it.status == RoomStatus.EN_LIMPIEZA }
+    val countAvailable = displayRooms.count { it.status == RoomStatus.DISPONIBLE }
+    val countOccupied = displayRooms.count { it.status == RoomStatus.OCUPADA }
+    val countCleaning = displayRooms.count { it.status == RoomStatus.PENDIENTE_LIMPIEZA || it.status == RoomStatus.EN_LIMPIEZA }
 
     // Filtered rooms
-    val filteredRooms = rooms.filter { room ->
+    val filteredRooms = displayRooms.filter { room ->
         val matchesSearch = room.roomNumber.contains(searchQuery, ignoreCase = true) ||
                 (room.clientName?.contains(searchQuery, ignoreCase = true) == true)
         val matchesFilter = when (selectedFilter) {
