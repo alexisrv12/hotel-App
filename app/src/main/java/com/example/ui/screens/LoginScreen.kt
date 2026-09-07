@@ -62,7 +62,9 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import kotlinx.coroutines.launch
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -379,7 +381,8 @@ fun LoginScreen(
             onDismiss = { showDeviceLinkingDialog = false },
             onLinkingSuccess = {
                 showDeviceLinkingDialog = false
-                Toast.makeText(context, "Dispositivo autorizado exitosamente", Toast.LENGTH_LONG).show()
+                val role = com.example.utils.DevicePreferences.getLinkedRole(context)
+                hotelViewModel.onDeviceLinkedSuccessfully(role)
             }
         )
     }
@@ -398,6 +401,7 @@ private fun DeviceLinkingOptionsDialog(
     onLinkingSuccess: () -> Unit
 ) {
     val context = LocalContext.current
+    val coroutineScope = rememberCoroutineScope()
     var selectedOption by remember { mutableStateOf(0) } // 0 = QR, 1 = PIN
     var pinInput by remember { mutableStateOf("") }
     var qrInput by remember { mutableStateOf("") }
@@ -590,11 +594,13 @@ private fun DeviceLinkingOptionsDialog(
                                 if (qrInput.isBlank()) {
                                     errorMessage = "PIN o código no válido"
                                 } else {
-                                    val success = deviceLinkingViewModel.completeLinkingWithQr(context, qrInput)
-                                    if (success) {
-                                        onLinkingSuccess()
-                                    } else {
-                                        errorMessage = "PIN o código no válido"
+                                    coroutineScope.launch {
+                                        val success = deviceLinkingViewModel.completeLinkingWithQrAsync(context, qrInput)
+                                        if (success) {
+                                            onLinkingSuccess()
+                                        } else {
+                                            errorMessage = deviceLinkingViewModel.userMessage.value ?: "PIN o código no válido"
+                                        }
                                     }
                                 }
                             },
@@ -651,11 +657,13 @@ private fun DeviceLinkingOptionsDialog(
                                 if (pinInput.isBlank()) {
                                     errorMessage = "PIN o código no válido"
                                 } else {
-                                    val success = deviceLinkingViewModel.completeLinkingWithPin(context, pinInput)
-                                    if (success) {
-                                        onLinkingSuccess()
-                                    } else {
-                                        errorMessage = "PIN o código no válido"
+                                    coroutineScope.launch {
+                                        val success = deviceLinkingViewModel.completeLinkingWithPinAsync(context, pinInput)
+                                        if (success) {
+                                            onLinkingSuccess()
+                                        } else {
+                                            errorMessage = deviceLinkingViewModel.userMessage.value ?: "PIN o código no válido"
+                                        }
                                     }
                                 }
                             },

@@ -147,7 +147,7 @@ class DeviceCodeValidationHelper(
     }
 
     companion object {
-        const val DEFAULT_EXPIRATION_DURATION_MS = 2 * 60 * 1000L // 2 minutes (120,000 ms)
+        const val DEFAULT_EXPIRATION_DURATION_MS = 15 * 60 * 1000L // 15 minutes (900,000 ms)
 
         private val instance = DeviceCodeValidationHelper()
 

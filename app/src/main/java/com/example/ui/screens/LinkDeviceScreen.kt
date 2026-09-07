@@ -26,6 +26,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.example.ui.Screen
 import com.example.ui.components.DeviceLinkingView
 import com.example.ui.theme.HotelNavy
 
@@ -35,7 +36,8 @@ import com.example.ui.theme.HotelNavy
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun LinkDeviceScreen(
-    onBackToLogin: () -> Unit
+    onBackToLogin: () -> Unit,
+    onLinkingSuccess: ((Screen) -> Unit)? = null
 ) {
     val context = LocalContext.current
 
@@ -77,8 +79,12 @@ fun LinkDeviceScreen(
             // Componente interactivo completo de vinculación con PIN, ZXing QR Scanner y Animación de Sincronización
             DeviceLinkingView(
                 onLinkingSuccess = { targetScreen ->
-                    Toast.makeText(context, "Dispositivo vinculado con éxito.", Toast.LENGTH_SHORT).show()
-                    onBackToLogin()
+                    Toast.makeText(context, "¡Dispositivo vinculado con éxito!", Toast.LENGTH_SHORT).show()
+                    if (onLinkingSuccess != null) {
+                        onLinkingSuccess(targetScreen)
+                    } else {
+                        onBackToLogin()
+                    }
                 }
             )
         }

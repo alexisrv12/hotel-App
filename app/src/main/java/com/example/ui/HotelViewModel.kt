@@ -40,8 +40,10 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import com.example.utils.DevicePreferences
 import com.example.utils.HotelNotificationHelper
 import com.example.utils.SecurityUtils
+import kotlinx.coroutines.Dispatchers
 import com.google.firebase.Firebase
 import com.google.firebase.FirebaseApp
 import com.google.firebase.FirebaseOptions
@@ -254,7 +256,27 @@ class HotelViewModel(application: Application) : AndroidViewModel(application) {
         }
         lowStockSupplies = lowStockFlow.asStateFlow()
 
-        // App launch always defaults to Screen.LOGIN as requested
+        // Check persistent device linking and session state so reopening the app never unlinks or asks for another login
+        val isLinked = DevicePreferences.isDeviceLinked(application)
+        val savedRole = DevicePreferences.getLinkedRole(application)
+        val savedUserName = DevicePreferences.getLinkedUserName(application)
+        val lastScreen = DevicePreferences.getLastActiveScreen(application)
+
+        if (isLinked) {
+            val upperRole = savedRole.uppercase()
+            _activeUser.value = savedUserName.ifBlank {
+                if (upperRole == "GERENTE") "Gerencia Hotel Rivera" else "Recepción Principal"
+            }
+            val targetScreen = when (lastScreen) {
+                Screen.GERENTE_DASHBOARD.name -> Screen.GERENTE_DASHBOARD
+                Screen.MAIN.name -> Screen.MAIN
+                Screen.RECEPCION.name -> Screen.RECEPCION
+                else -> if (upperRole == "GERENTE") Screen.GERENTE_DASHBOARD else Screen.RECEPCION
+            }
+            _currentScreen.value = targetScreen
+        } else {
+            _currentScreen.value = Screen.LOGIN
+        }
 
         startLiveClock()
         monitorRoomTimers()
@@ -324,6 +346,98 @@ class HotelViewModel(application: Application) : AndroidViewModel(application) {
                         }
                         _habitaciones.value = listaHabitaciones
                         _firestoreRooms.value = listaRooms
+
+                        // Sincronización bidireccional estable con Room SQLite
+                        if (snapshot.isEmpty) {
+                            viewModelScope.launch(Dispatchers.IO) {
+                                val local = repository.allRooms.first()
+                                for (room in local) {
+                                    val firestoreData = hashMapOf<String, Any>(
+                                        "numero" to room.roomNumber,
+                                        "roomNumber" to room.roomNumber,
+                                        "estado" to room.status,
+                                        "status" to room.status,
+                                        "precio" to room.nightlyRate,
+                                        "price" to room.nightlyRate,
+                                        "roomType" to room.roomType,
+                                        "clientName" to (room.clientName ?: ""),
+                                        "clientDpi" to (room.clientDpi ?: ""),
+                                        "checkInTimestamp" to room.checkInTimeMillis,
+                                        "checkOutTimestamp" to room.checkOutTimeMillis,
+                                        "notes" to (room.notes ?: "")
+                                    )
+                                    Firebase.firestore.collection("habitaciones").document(room.roomNumber)
+                                        .set(firestoreData, SetOptions.merge())
+                                }
+                            }
+                        } else {
+                            viewModelScope.launch(Dispatchers.IO) {
+                                val remoteRoomNumbers = listaRooms.map { it.roomNumber.ifBlank { it.id }.trim().lowercase() }.toSet()
+                                for (r in listaRooms) {
+                                    try {
+                                        val num = r.roomNumber.ifBlank { r.id }.trim()
+                                        val existing = repository.getRoomByNumber(num)
+                                        val mappedStatus = when {
+                                            r.status.contains("Ocup", ignoreCase = true) || r.status == RoomStatus.OCUPADA -> RoomStatus.OCUPADA
+                                            r.status.contains("Limp", ignoreCase = true) || r.status == RoomStatus.PENDIENTE_LIMPIEZA -> RoomStatus.PENDIENTE_LIMPIEZA
+                                            else -> RoomStatus.DISPONIBLE
+                                        }
+                                        val isAvailableOrCleaning = mappedStatus == RoomStatus.DISPONIBLE || mappedStatus == RoomStatus.PENDIENTE_LIMPIEZA
+                                        val effectiveClientName = if (isAvailableOrCleaning) null else r.clientName?.takeIf { it.isNotBlank() }
+                                        val effectiveClientDpi = if (isAvailableOrCleaning) null else r.clientDpi?.takeIf { it.isNotBlank() }
+                                        val effectiveCheckIn = if (isAvailableOrCleaning) 0L else (if (r.checkInTimestamp > 0) r.checkInTimestamp else 0L)
+                                        val effectiveCheckOut = if (isAvailableOrCleaning) 0L else (if (r.checkOutTimestamp > 0) r.checkOutTimestamp else 0L)
+
+                                        if (existing == null) {
+                                            repository.insertRoom(
+                                                RoomEntity(
+                                                    roomNumber = num,
+                                                    status = mappedStatus,
+                                                    nightlyRate = if (r.price > 0) r.price else 150.0,
+                                                    clientName = effectiveClientName,
+                                                    clientDpi = effectiveClientDpi,
+                                                    checkInTimeMillis = effectiveCheckIn,
+                                                    checkOutTimeMillis = effectiveCheckOut,
+                                                    notes = r.notes
+                                                )
+                                            )
+                                        } else {
+                                            val shouldUpdate = existing.status != mappedStatus ||
+                                                    existing.clientName != effectiveClientName ||
+                                                    existing.clientDpi != effectiveClientDpi ||
+                                                    existing.checkInTimeMillis != effectiveCheckIn ||
+                                                    existing.checkOutTimeMillis != effectiveCheckOut ||
+                                                    existing.notes != r.notes ||
+                                                    (r.price > 0 && existing.nightlyRate != r.price)
+
+                                            if (shouldUpdate) {
+                                                repository.updateRoomDetails(
+                                                    existing.copy(
+                                                        status = mappedStatus,
+                                                        nightlyRate = if (r.price > 0) r.price else existing.nightlyRate,
+                                                        clientName = effectiveClientName,
+                                                        clientDpi = effectiveClientDpi,
+                                                        checkInTimeMillis = effectiveCheckIn,
+                                                        checkOutTimeMillis = effectiveCheckOut,
+                                                        notes = r.notes
+                                                    )
+                                                )
+                                            }
+                                        }
+                                    } catch (ex: Exception) {
+                                        Log.w("HotelViewModel", "Aviso sincronizando habitación a SQLite: ${ex.message}")
+                                    }
+                                }
+
+                                // Si alguna habitación fue eliminada en Firestore, reflejar eliminación en SQLite local
+                                val localRooms = repository.allRooms.first()
+                                for (localRoom in localRooms) {
+                                    if (localRoom.roomNumber.trim().lowercase() !in remoteRoomNumbers) {
+                                        repository.deleteRoom(localRoom.id)
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
         } catch (e: Exception) {
@@ -338,18 +452,26 @@ class HotelViewModel(application: Application) : AndroidViewModel(application) {
         if (idHabitacion.isBlank()) return
         try {
             ensureFirebaseInitialized()
+            val isDisponible = nuevoEstado.contains("Disp", ignoreCase = true) || nuevoEstado == RoomStatus.DISPONIBLE
+            val firestoreData = hashMapOf<String, Any>(
+                "estado" to nuevoEstado,
+                "status" to nuevoEstado,
+                "numero" to idHabitacion,
+                "roomNumber" to idHabitacion
+            )
+            if (isDisponible) {
+                firestoreData["clientName"] = ""
+                firestoreData["clientDpi"] = ""
+                firestoreData["checkInTimestamp"] = 0L
+                firestoreData["checkOutTimestamp"] = 0L
+            }
             Firebase.firestore.collection("habitaciones").document(idHabitacion)
-                .update("estado", nuevoEstado)
+                .set(firestoreData, SetOptions.merge())
                 .addOnSuccessListener {
-                    Log.i("HotelViewModel", "Estado de habitación $idHabitacion actualizado a $nuevoEstado")
+                    Log.i("HotelViewModel", "Estado de habitación $idHabitacion actualizado a $nuevoEstado en Firestore")
                 }
                 .addOnFailureListener { e ->
-                    Log.w("HotelViewModel", "Update directo falló, sincronizando con merge: ${e.message}")
-                    Firebase.firestore.collection("habitaciones").document(idHabitacion)
-                        .set(mapOf("estado" to nuevoEstado, "numero" to idHabitacion), SetOptions.merge())
-                        .addOnSuccessListener {
-                            Log.i("HotelViewModel", "Habitación $idHabitacion sincronizada con merge en Firestore.")
-                        }
+                    Log.w("HotelViewModel", "Error al actualizar estado en Firestore: ${e.message}")
                 }
         } catch (e: Exception) {
             Log.e("HotelViewModel", "Error al actualizar estado de habitación: ${e.message}", e)
@@ -496,14 +618,31 @@ class HotelViewModel(application: Application) : AndroidViewModel(application) {
         }
 
         if (matchedUser != null) {
-            _activeUser.value = matchedUser.fullName.ifBlank { matchedUser.username }
+            val role = matchedUser.role.ifBlank { "RECEPCION" }
+            val name = matchedUser.fullName.ifBlank { matchedUser.username }
+            _activeUser.value = name
             _currentScreen.value = Screen.MAIN
-            _userMessage.value = "Sesión iniciada como ${matchedUser.fullName}"
+            _userMessage.value = "Sesión iniciada como $name"
+            val deviceId = DevicePreferences.getLinkedDeviceId(getApplication())
+            DevicePreferences.setDeviceLinked(
+                context = getApplication(),
+                deviceId = deviceId,
+                email = matchedUser.username,
+                role = role,
+                userName = name
+            )
+            DevicePreferences.setDeviceAuthorized(getApplication(), true)
+            DevicePreferences.setLastActiveScreen(getApplication(), Screen.MAIN.name)
             viewModelScope.launch {
                 sessionRepo.saveSession(
-                    userRole = matchedUser.role.ifBlank { "RECEPCION" },
+                    userRole = role,
                     userEmail = matchedUser.username,
-                    userName = matchedUser.fullName
+                    userName = name
+                )
+                sessionRepo.saveDeviceAuthorization(
+                    deviceId = deviceId,
+                    role = role,
+                    email = matchedUser.username
                 )
             }
             return true
@@ -514,6 +653,16 @@ class HotelViewModel(application: Application) : AndroidViewModel(application) {
             _activeUser.value = "Gerencia Rivera Hotel"
             _currentScreen.value = Screen.MAIN
             _userMessage.value = "Sesión iniciada como Gerente"
+            val deviceId = DevicePreferences.getLinkedDeviceId(getApplication())
+            DevicePreferences.setDeviceLinked(
+                context = getApplication(),
+                deviceId = deviceId,
+                email = "riverahotel01@gmail.com",
+                role = "GERENTE",
+                userName = "Gerencia Rivera Hotel"
+            )
+            DevicePreferences.setDeviceAuthorized(getApplication(), true)
+            DevicePreferences.setLastActiveScreen(getApplication(), Screen.MAIN.name)
             viewModelScope.launch {
                 sessionRepo.saveSession(
                     userRole = "GERENTE",
@@ -528,6 +677,16 @@ class HotelViewModel(application: Application) : AndroidViewModel(application) {
             _activeUser.value = "Gerencia Hotel Rivera"
             _currentScreen.value = Screen.MAIN
             _userMessage.value = "Sesión iniciada como Gerente"
+            val deviceId = DevicePreferences.getLinkedDeviceId(getApplication())
+            DevicePreferences.setDeviceLinked(
+                context = getApplication(),
+                deviceId = deviceId,
+                email = "gerencia@hotelrivera.com",
+                role = "GERENTE",
+                userName = "Gerencia Hotel Rivera"
+            )
+            DevicePreferences.setDeviceAuthorized(getApplication(), true)
+            DevicePreferences.setLastActiveScreen(getApplication(), Screen.MAIN.name)
             viewModelScope.launch {
                 sessionRepo.saveSession(
                     userRole = "GERENTE",
@@ -542,6 +701,16 @@ class HotelViewModel(application: Application) : AndroidViewModel(application) {
             _activeUser.value = "Recepción Turno Principal"
             _currentScreen.value = Screen.MAIN
             _userMessage.value = "Sesión iniciada como Recepción"
+            val deviceId = DevicePreferences.getLinkedDeviceId(getApplication())
+            DevicePreferences.setDeviceLinked(
+                context = getApplication(),
+                deviceId = deviceId,
+                email = "recepcion@hotelrivera.com",
+                role = "RECEPCION",
+                userName = "Recepción Turno Principal"
+            )
+            DevicePreferences.setDeviceAuthorized(getApplication(), true)
+            DevicePreferences.setLastActiveScreen(getApplication(), Screen.MAIN.name)
             viewModelScope.launch {
                 sessionRepo.saveSession(
                     userRole = "RECEPCION",
@@ -560,6 +729,7 @@ class HotelViewModel(application: Application) : AndroidViewModel(application) {
         _activeUser.value = "Recepción Principal"
         _currentScreen.value = Screen.LOGIN
         _userMessage.value = "Sesión cerrada correctamente."
+        DevicePreferences.setLastActiveScreen(getApplication(), Screen.LOGIN.name)
         viewModelScope.launch {
             sessionRepo.clearSession()
         }
@@ -619,6 +789,9 @@ class HotelViewModel(application: Application) : AndroidViewModel(application) {
         }
 
         _currentScreen.value = screen
+        if (screen != Screen.LOGIN && screen != Screen.PERMISSIONS) {
+            DevicePreferences.setLastActiveScreen(getApplication(), screen.name)
+        }
     }
 
     fun validateManagerPin(enteredPin: String) {
@@ -712,6 +885,24 @@ class HotelViewModel(application: Application) : AndroidViewModel(application) {
     fun extendStay(roomId: Long, extraMinutes: Long, extraPrice: Double) {
         viewModelScope.launch {
             repository.extendStay(roomId, extraMinutes, extraPrice)
+            val room = rooms.value.find { it.id == roomId }
+            if (room != null) {
+                try {
+                    ensureFirebaseInitialized()
+                    val newCheckOut = room.checkOutTimeMillis + (extraMinutes * 60 * 1000L)
+                    val newPrice = room.nightlyRate + extraPrice
+                    val firestoreData = hashMapOf<String, Any>(
+                        "numero" to room.roomNumber,
+                        "roomNumber" to room.roomNumber,
+                        "checkOutTimestamp" to newCheckOut,
+                        "price" to newPrice
+                    )
+                    Firebase.firestore.collection("habitaciones").document(room.roomNumber)
+                        .set(firestoreData, SetOptions.merge())
+                } catch (e: Exception) {
+                    Log.w("HotelViewModel", "Aviso sincronizando extendStay a Firestore: ${e.message}")
+                }
+            }
             _userMessage.value = "Tiempo extendido $extraMinutes minutos."
         }
     }
@@ -732,6 +923,27 @@ class HotelViewModel(application: Application) : AndroidViewModel(application) {
                 finalPrice = finalPrice,
                 extraNotes = notes
             )
+
+            // Sincronizar salida y cambio a limpieza con Firestore en tiempo real
+            try {
+                ensureFirebaseInitialized()
+                val firestoreData = hashMapOf<String, Any>(
+                    "numero" to roomNum,
+                    "roomNumber" to roomNum,
+                    "estado" to "Pendiente de Limpieza",
+                    "status" to "Cleaning",
+                    "clientName" to "",
+                    "clientDpi" to "",
+                    "checkInTimestamp" to 0L,
+                    "checkOutTimestamp" to 0L,
+                    "notes" to (notes ?: "")
+                )
+                Firebase.firestore.collection("habitaciones").document(roomNum)
+                    .set(firestoreData, SetOptions.merge())
+            } catch (e: Exception) {
+                Log.w("HotelViewModel", "Aviso sincronizando check-out a Firestore: ${e.message}")
+            }
+
             HotelNotificationHelper.sendGuestCheckOutAlert(
                 context = getApplication(),
                 roomNumber = roomNum,
@@ -744,6 +956,22 @@ class HotelViewModel(application: Application) : AndroidViewModel(application) {
     fun updateRoomCleaningStatus(roomId: Long, newStatus: String) {
         viewModelScope.launch {
             repository.setRoomCleaningStatus(roomId, newStatus, _activeUser.value)
+            try {
+                ensureFirebaseInitialized()
+                val room = rooms.value.find { it.id == roomId }
+                val roomNum = room?.roomNumber ?: roomId.toString()
+                val firestoreStatus = if (newStatus.contains("Disp", ignoreCase = true) || newStatus == RoomStatus.DISPONIBLE) "Disponible" else newStatus
+                val firestoreData = hashMapOf<String, Any>(
+                    "numero" to roomNum,
+                    "roomNumber" to roomNum,
+                    "estado" to firestoreStatus,
+                    "status" to firestoreStatus
+                )
+                Firebase.firestore.collection("habitaciones").document(roomNum)
+                    .set(firestoreData, SetOptions.merge())
+            } catch (e: Exception) {
+                Log.w("HotelViewModel", "Aviso sincronizando estado limpieza a Firestore: ${e.message}")
+            }
             _userMessage.value = "Estado de limpieza actualizado."
         }
     }
@@ -1388,6 +1616,65 @@ class HotelViewModel(application: Application) : AndroidViewModel(application) {
     }
 
         // --- MÉTODOS DE VINCULACIÓN EN FIRESTORE ---
+    fun setTokenVinculacionPin(pin: String, qrToken: String? = null) {
+        val qr = qrToken ?: _tokenVinculacion.value?.qrToken ?: "TOKEN-QR-${UUID.randomUUID().toString().replace("-", "").take(12).uppercase()}"
+        val tokenObj = VinculacionToken(
+            id = pin,
+            pin = pin,
+            qrToken = qr,
+            fechaCreacion = System.currentTimeMillis(),
+            fechaExpiracion = System.currentTimeMillis() + (15 * 60 * 1000L),
+            activo = true,
+            estado = "PENDIENTE",
+            hotelName = "Hotel Rivera",
+            rol = "RECEPCION"
+        )
+        _tokenVinculacion.value = tokenObj
+        _estadoVinculacion.value = "PIN Generado: $pin (Válido por 15 min)"
+    }
+
+    fun onDeviceLinkedSuccessfully(role: String = "RECEPCION") {
+        val upperRole = role.uppercase()
+        val userName = if (upperRole == "GERENTE") "Gerencia Hotel Rivera" else "Recepción Terminal Vinculada"
+        val targetScreen = if (upperRole == "GERENTE") Screen.GERENTE_DASHBOARD else Screen.RECEPCION
+        _activeUser.value = userName
+        _currentScreen.value = targetScreen
+        _userMessage.value = "¡Dispositivo vinculado permanentemente y sincronizado con Firebase!"
+
+        val deviceId = DevicePreferences.getLinkedDeviceId(getApplication())
+        val email = "${upperRole.lowercase()}@hotelrivera.com"
+
+        DevicePreferences.setDeviceLinked(
+            context = getApplication(),
+            deviceId = deviceId,
+            email = email,
+            role = upperRole,
+            userName = userName
+        )
+        DevicePreferences.setDeviceAuthorized(getApplication(), true)
+        DevicePreferences.setLastActiveScreen(getApplication(), targetScreen.name)
+
+        viewModelScope.launch {
+            sessionRepo.saveSession(
+                userRole = upperRole,
+                userEmail = email,
+                userName = userName
+            )
+            sessionRepo.saveDeviceAuthorization(
+                deviceId = deviceId,
+                role = upperRole,
+                email = email
+            )
+            com.example.utils.FirebaseManager.registerDeviceInFirestore(
+                context = getApplication(),
+                deviceId = deviceId,
+                deviceName = "Terminal $upperRole",
+                role = upperRole,
+                userAssigned = email
+            )
+        }
+    }
+
     fun generarTokenVinculacion() {
         val nuevoPin = (100000..999999).random().toString()
         val nuevoQrToken = "TOKEN-QR-${UUID.randomUUID().toString().replace("-", "").take(12).uppercase()}-${System.currentTimeMillis()}"

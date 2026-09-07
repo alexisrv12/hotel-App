@@ -145,8 +145,38 @@ fun HotelRiveraApp(viewModel: HotelViewModel) {
         when (currentScreen) {
             Screen.PERMISSIONS -> {
                 PermissionRequestScreen(
-                    onAllPermissionsGranted = { viewModel.navigateTo(Screen.LOGIN) },
-                    onDismissOrContinue = { viewModel.navigateTo(Screen.LOGIN) }
+                    onAllPermissionsGranted = {
+                        val isLinked = com.example.utils.DevicePreferences.isDeviceLinked(context)
+                        if (isLinked) {
+                            val role = com.example.utils.DevicePreferences.getLinkedRole(context)
+                            val last = com.example.utils.DevicePreferences.getLastActiveScreen(context)
+                            val target = when (last) {
+                                Screen.GERENTE_DASHBOARD.name -> Screen.GERENTE_DASHBOARD
+                                Screen.MAIN.name -> Screen.MAIN
+                                Screen.RECEPCION.name -> Screen.RECEPCION
+                                else -> if (role.equals("GERENTE", ignoreCase = true)) Screen.GERENTE_DASHBOARD else Screen.RECEPCION
+                            }
+                            viewModel.navigateTo(target)
+                        } else {
+                            viewModel.navigateTo(Screen.LOGIN)
+                        }
+                    },
+                    onDismissOrContinue = {
+                        val isLinked = com.example.utils.DevicePreferences.isDeviceLinked(context)
+                        if (isLinked) {
+                            val role = com.example.utils.DevicePreferences.getLinkedRole(context)
+                            val last = com.example.utils.DevicePreferences.getLastActiveScreen(context)
+                            val target = when (last) {
+                                Screen.GERENTE_DASHBOARD.name -> Screen.GERENTE_DASHBOARD
+                                Screen.MAIN.name -> Screen.MAIN
+                                Screen.RECEPCION.name -> Screen.RECEPCION
+                                else -> if (role.equals("GERENTE", ignoreCase = true)) Screen.GERENTE_DASHBOARD else Screen.RECEPCION
+                            }
+                            viewModel.navigateTo(target)
+                        } else {
+                            viewModel.navigateTo(Screen.LOGIN)
+                        }
+                    }
                 )
             }
 
@@ -165,7 +195,12 @@ fun HotelRiveraApp(viewModel: HotelViewModel) {
 
             Screen.LINK_DEVICE -> {
                 LinkDeviceScreen(
-                    onBackToLogin = { viewModel.navigateTo(Screen.LOGIN) }
+                    onBackToLogin = { viewModel.navigateTo(Screen.LOGIN) },
+                    onLinkingSuccess = { targetScreen ->
+                        viewModel.onDeviceLinkedSuccessfully(
+                            if (targetScreen == Screen.GERENTE_DASHBOARD) "GERENTE" else "RECEPCION"
+                        )
+                    }
                 )
             }
 

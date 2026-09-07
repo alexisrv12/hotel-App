@@ -14,11 +14,13 @@ import com.google.firebase.Firebase
 import com.google.firebase.firestore.ListenerRegistration
 import com.google.firebase.firestore.SetOptions
 import com.google.firebase.firestore.firestore
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
@@ -39,8 +41,69 @@ class GuestCheckInViewModel @JvmOverloads constructor(
     val firestoreRooms: StateFlow<List<Room>> = _firestoreRooms.asStateFlow()
     private var firestoreListener: ListenerRegistration? = null
 
-    // All rooms Flow from Room DB
-    val allRooms: StateFlow<List<RoomEntity>> = roomDao.getAllRooms().stateIn(
+    // Combined real-time mirror: Rooms from Room DB merged with Firestore
+    val allRooms: StateFlow<List<RoomEntity>> = combine(roomDao.getAllRooms(), _firestoreRooms) { localRooms, fsRooms ->
+        if (fsRooms.isEmpty()) {
+            localRooms
+        } else {
+            val firestoreMap = fsRooms.associateBy { it.roomNumber.trim().lowercase() }
+            val remoteNumbers = fsRooms.map { it.roomNumber.trim().lowercase() }.toSet()
+            val mergedFromLocal = localRooms
+                .filter { it.roomNumber.trim().lowercase() in remoteNumbers }
+                .map { localRoom ->
+                    val fsRoom = firestoreMap[localRoom.roomNumber.trim().lowercase()]
+                    if (fsRoom != null) {
+                        val convertedStatus = when (fsRoom.status.uppercase()) {
+                            "DISPONIBLE", "AVAILABLE" -> RoomStatus.DISPONIBLE
+                            "OCUPADA", "OCCUPIED" -> RoomStatus.OCUPADA
+                            "LIMPIEZA", "CLEANING", "PENDIENTE_LIMPIEZA", "EN_LIMPIEZA" -> RoomStatus.PENDIENTE_LIMPIEZA
+                            else -> localRoom.status
+                        }
+                        val isAvailableOrCleaning = convertedStatus == RoomStatus.DISPONIBLE || convertedStatus == RoomStatus.PENDIENTE_LIMPIEZA
+                        val effectiveClientName = if (isAvailableOrCleaning) null else (fsRoom.clientName?.takeIf { it.isNotBlank() } ?: localRoom.clientName)
+                        val effectiveClientDpi = if (isAvailableOrCleaning) null else (fsRoom.clientDpi?.takeIf { it.isNotBlank() } ?: localRoom.clientDpi)
+                        val effectiveCheckIn = if (isAvailableOrCleaning) 0L else (if (fsRoom.checkInTimestamp > 0L) fsRoom.checkInTimestamp else localRoom.checkInTimeMillis)
+                        val effectiveCheckOut = if (isAvailableOrCleaning) 0L else (if (fsRoom.checkOutTimestamp > 0L) fsRoom.checkOutTimestamp else localRoom.checkOutTimeMillis)
+
+                        localRoom.copy(
+                            status = convertedStatus,
+                            nightlyRate = if (fsRoom.price > 0.0) fsRoom.price else localRoom.nightlyRate,
+                            clientName = effectiveClientName,
+                            clientDpi = effectiveClientDpi,
+                            checkInTimeMillis = effectiveCheckIn,
+                            checkOutTimeMillis = effectiveCheckOut,
+                            notes = if (!fsRoom.notes.isNullOrBlank()) fsRoom.notes else localRoom.notes
+                        )
+                    } else {
+                        localRoom
+                    }
+                }
+            val localRoomNumbers = localRooms.map { it.roomNumber.trim().lowercase() }.toSet()
+            val extraFromFirestore = fsRooms
+                .filter { it.roomNumber.trim().lowercase() !in localRoomNumbers }
+                .mapIndexed { idx, fs ->
+                    val convertedStatus = when (fs.status.uppercase()) {
+                        "DISPONIBLE", "AVAILABLE" -> RoomStatus.DISPONIBLE
+                        "OCUPADA", "OCCUPIED" -> RoomStatus.OCUPADA
+                        "LIMPIEZA", "CLEANING", "PENDIENTE_LIMPIEZA", "EN_LIMPIEZA" -> RoomStatus.PENDIENTE_LIMPIEZA
+                        else -> RoomStatus.DISPONIBLE
+                    }
+                    RoomEntity(
+                        id = (10000L + idx),
+                        roomNumber = fs.roomNumber,
+                        roomType = fs.roomType,
+                        status = convertedStatus,
+                        nightlyRate = fs.price,
+                        clientName = fs.clientName,
+                        clientDpi = fs.clientDpi,
+                        checkInTimeMillis = if (fs.checkInTimestamp > 0L) fs.checkInTimestamp else 0L,
+                        checkOutTimeMillis = if (fs.checkOutTimestamp > 0L) fs.checkOutTimestamp else 0L,
+                        notes = fs.notes
+                    )
+                }
+            mergedFromLocal + extraFromFirestore
+        }
+    }.stateIn(
         scope = viewModelScope,
         started = SharingStarted.WhileSubscribed(5000),
         initialValue = emptyList()
@@ -115,6 +178,70 @@ class GuestCheckInViewModel @JvmOverloads constructor(
                             }
                         }
                         _firestoreRooms.value = lista
+                        viewModelScope.launch(Dispatchers.IO) {
+                            val remoteRoomNumbers = lista.map { it.roomNumber.ifBlank { it.id }.trim().lowercase() }.toSet()
+                            for (r in lista) {
+                                try {
+                                    val num = r.roomNumber.ifBlank { r.id }.trim()
+                                    val existing = roomDao.getRoomByNumber(num)
+                                    val mappedStatus = when {
+                                        r.status.contains("Ocup", ignoreCase = true) || r.status == RoomStatus.OCUPADA -> RoomStatus.OCUPADA
+                                        r.status.contains("Limp", ignoreCase = true) || r.status == RoomStatus.PENDIENTE_LIMPIEZA -> RoomStatus.PENDIENTE_LIMPIEZA
+                                        else -> RoomStatus.DISPONIBLE
+                                    }
+                                    val isAvailableOrCleaning = mappedStatus == RoomStatus.DISPONIBLE || mappedStatus == RoomStatus.PENDIENTE_LIMPIEZA
+                                    val effectiveClientName = if (isAvailableOrCleaning) null else r.clientName?.takeIf { it.isNotBlank() }
+                                    val effectiveClientDpi = if (isAvailableOrCleaning) null else r.clientDpi?.takeIf { it.isNotBlank() }
+                                    val effectiveCheckIn = if (isAvailableOrCleaning) 0L else (if (r.checkInTimestamp > 0) r.checkInTimestamp else 0L)
+                                    val effectiveCheckOut = if (isAvailableOrCleaning) 0L else (if (r.checkOutTimestamp > 0) r.checkOutTimestamp else 0L)
+
+                                    if (existing == null) {
+                                        roomDao.insertRoom(
+                                            RoomEntity(
+                                                roomNumber = num,
+                                                status = mappedStatus,
+                                                nightlyRate = if (r.price > 0) r.price else 150.0,
+                                                clientName = effectiveClientName,
+                                                clientDpi = effectiveClientDpi,
+                                                checkInTimeMillis = effectiveCheckIn,
+                                                checkOutTimeMillis = effectiveCheckOut,
+                                                notes = r.notes
+                                            )
+                                        )
+                                    } else {
+                                        val shouldUpdate = existing.status != mappedStatus ||
+                                                existing.clientName != effectiveClientName ||
+                                                existing.clientDpi != effectiveClientDpi ||
+                                                existing.checkInTimeMillis != effectiveCheckIn ||
+                                                existing.checkOutTimeMillis != effectiveCheckOut ||
+                                                existing.notes != r.notes ||
+                                                (r.price > 0 && existing.nightlyRate != r.price)
+
+                                        if (shouldUpdate) {
+                                            roomDao.updateRoom(
+                                                existing.copy(
+                                                    status = mappedStatus,
+                                                    nightlyRate = if (r.price > 0) r.price else existing.nightlyRate,
+                                                    clientName = effectiveClientName,
+                                                    clientDpi = effectiveClientDpi,
+                                                    checkInTimeMillis = effectiveCheckIn,
+                                                    checkOutTimeMillis = effectiveCheckOut,
+                                                    notes = r.notes
+                                                )
+                                            )
+                                        }
+                                    }
+                                } catch (ex: Exception) {
+                                    Log.w("GuestCheckInVM", "Aviso sincronizando habitación a RoomDao: ${ex.message}")
+                                }
+                            }
+                            val localRooms = roomDao.getAllRooms().first()
+                            for (localRoom in localRooms) {
+                                if (localRoom.roomNumber.trim().lowercase() !in remoteRoomNumbers) {
+                                    roomDao.deleteRoom(localRoom)
+                                }
+                            }
+                        }
                     }
                 }
         } catch (e: Exception) {

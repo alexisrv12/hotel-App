@@ -87,34 +87,24 @@ class LinkingViewModel(application: Application) : AndroidViewModel(application)
     val navigationEvent: SharedFlow<Screen> = _navigationEvent.asSharedFlow()
 
     init {
-        // Load or initialize active pairing tokens
+        // Load active pairing tokens if already saved locally
         viewModelScope.launch {
             val (savedPin, pinTs) = sessionRepo.getActivePin()
             val now = System.currentTimeMillis()
-            if (!savedPin.isNullOrBlank() && pinTs > 0 && (now - pinTs < 120_000L)) {
+            if (!savedPin.isNullOrBlank() && pinTs > 0 && (now - pinTs < 15 * 60 * 1000L)) {
                 _activeManagerPin.value = savedPin
                 _pinTimestamp.value = pinTs
-            } else {
-                refreshActivePin()
             }
 
             val (savedQr, qrTs) = sessionRepo.getActiveQrToken()
-            if (!savedQr.isNullOrBlank() && qrTs > 0 && (now - qrTs < 120_000L)) {
+            if (!savedQr.isNullOrBlank() && qrTs > 0 && (now - qrTs < 15 * 60 * 1000L)) {
                 _activeManagerQr.value = savedQr
                 _qrTimestamp.value = qrTs
-            } else {
-                refreshActiveQr()
             }
 
-            // Ticker loop
+            // Ticker loop: displays formatted countdown, avoids overwriting active manager tokens unexpectedly
             while (isActive) {
                 val current = System.currentTimeMillis()
-                if (current - _pinTimestamp.value >= 120_000L) {
-                    refreshActivePin()
-                }
-                if (current - _qrTimestamp.value >= 120_000L) {
-                    refreshActiveQr()
-                }
                 _pinCountdown.value = codeValidator.getFormattedCountdown(_pinTimestamp.value, current)
                 _qrCountdown.value = codeValidator.getFormattedCountdown(_qrTimestamp.value, current)
                 delay(1000L)
@@ -385,6 +375,22 @@ class LinkingViewModel(application: Application) : AndroidViewModel(application)
                 authToken = token
             )
 
+            // Save in persistent DevicePreferences for app reopen persistence without re-login
+            val targetScreen = if (role.equals("GERENTE", ignoreCase = true) || role.equals("ADMIN", ignoreCase = true)) {
+                Screen.GERENTE_DASHBOARD
+            } else {
+                Screen.RECEPCION
+            }
+            DevicePreferences.setDeviceLinked(
+                context = context,
+                deviceId = deviceId,
+                email = email,
+                role = role,
+                userName = deviceName
+            )
+            DevicePreferences.setDeviceAuthorized(context, true)
+            DevicePreferences.setLastActiveScreen(context, targetScreen.name)
+
             // Sync with Legacy DataStore and SharedPreferences
             DeviceDataStoreManager(context).saveDeviceAuthorization(deviceId, email)
 
@@ -400,18 +406,8 @@ class LinkingViewModel(application: Application) : AndroidViewModel(application)
             )
             deviceRepo.insertDevice(deviceEntity)
 
-            // Regenerate tokens in Gerencia
-            refreshActivePin()
-            refreshActiveQr()
-
             _uiState.value = LinkingUiState.Syncing(1.0f, "¡Dispositivo vinculado con éxito!")
             delay(300)
-
-            val targetScreen = if (role.equals("GERENTE", ignoreCase = true) || role.equals("ADMIN", ignoreCase = true)) {
-                Screen.GERENTE_DASHBOARD
-            } else {
-                Screen.RECEPCION
-            }
 
             _uiState.value = LinkingUiState.Success(
                 role = role,

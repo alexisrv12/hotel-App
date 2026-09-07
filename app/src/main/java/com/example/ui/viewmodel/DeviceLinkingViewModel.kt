@@ -20,6 +20,7 @@ import com.example.utils.DeviceLinkingUtils
 import com.example.utils.DeviceNotificationManager
 import com.example.utils.DevicePreferences
 import com.example.utils.PinValidationResult
+import com.example.ui.Screen
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -457,6 +458,165 @@ class DeviceLinkingViewModel @JvmOverloads constructor(
     /**
      * Paso 3: Validates PIN and registers device as authorized, syncing with Room database and SharedPreferences.
      */
+    suspend fun completeLinkingWithPinAsync(context: Context, inputPin: String, deviceName: String = "Dispositivo Móvil"): Boolean {
+        val now = System.currentTimeMillis()
+        val localValid = codeValidator.validatePinCode(
+            inputPin = inputPin,
+            expectedPin = _currentPin.value,
+            createdTimestampMs = _pinCreationTimestamp.value,
+            currentTimeMs = now
+        ) is CodeValidationResult.Valid
+
+        val deviceId = DevicePreferences.getLinkedDeviceId(context)
+        val email = _userEmail.value.ifBlank { DevicePreferences.getLinkedEmail(context) ?: "usuario@hotel.com" }
+
+        if (localValid) {
+            val device = DeviceEntity(
+                name = deviceName,
+                userAssigned = email,
+                deviceId = deviceId,
+                connectionStatus = DeviceConnectionStatus.CONNECTED,
+                realTimeConnectivityStatus = RealTimeConnectivityStatus.ACTIVE,
+                lastHeartbeat = System.currentTimeMillis(),
+                timestamp = System.currentTimeMillis()
+            )
+            repository.insertDevice(device)
+            DeviceDataStoreManager(context).saveDeviceAuthorization(deviceId, email)
+            DevicePreferences.setDeviceLinked(
+                context = context,
+                deviceId = deviceId,
+                email = email,
+                role = "RECEPCION",
+                userName = deviceName
+            )
+            DevicePreferences.setDeviceAuthorized(context, true)
+            DevicePreferences.setLastActiveScreen(context, Screen.RECEPCION.name)
+            com.example.utils.FirebaseManager.registerDeviceInFirestore(context, deviceId, deviceName, "RECEPCION", email)
+            _userMessage.value = "Dispositivo autorizado y vinculado con éxito."
+            return true
+        }
+
+        // Si no coincide localmente, validar con Firebase Firestore en la nube
+        try {
+            val cloudRes = com.example.utils.FirebaseManager.validatePinOrQr(
+                context = context,
+                input = inputPin,
+                deviceId = deviceId,
+                deviceName = deviceName
+            )
+            if (cloudRes.isSuccess) {
+                val device = DeviceEntity(
+                    name = deviceName,
+                    userAssigned = email,
+                    deviceId = deviceId,
+                    connectionStatus = DeviceConnectionStatus.CONNECTED,
+                    realTimeConnectivityStatus = RealTimeConnectivityStatus.ACTIVE,
+                    lastHeartbeat = System.currentTimeMillis(),
+                    timestamp = System.currentTimeMillis()
+                )
+                repository.insertDevice(device)
+                DeviceDataStoreManager(context).saveDeviceAuthorization(deviceId, email)
+                DevicePreferences.setDeviceLinked(
+                    context = context,
+                    deviceId = deviceId,
+                    email = email,
+                    role = "RECEPCION",
+                    userName = deviceName
+                )
+                DevicePreferences.setDeviceAuthorized(context, true)
+                DevicePreferences.setLastActiveScreen(context, Screen.RECEPCION.name)
+                _userMessage.value = "Dispositivo autorizado y vinculado con éxito en Firebase."
+                return true
+            } else {
+                val reason = cloudRes.exceptionOrNull()?.message ?: "El PIN ingresado es incorrecto o ha expirado."
+                _userMessage.value = reason
+                return false
+            }
+        } catch (e: Exception) {
+            _userMessage.value = "Error al validar con Firebase: ${e.message}"
+            return false
+        }
+    }
+
+    suspend fun completeLinkingWithQrAsync(context: Context, qrToken: String, deviceName: String = "Dispositivo Móvil"): Boolean {
+        val now = System.currentTimeMillis()
+        val localValid = codeValidator.validateQrToken(
+            inputQrToken = qrToken,
+            expectedQrToken = _currentQrSessionToken.value,
+            createdTimestampMs = _qrCreationTimestamp.value,
+            currentTimeMs = now
+        ) is CodeValidationResult.Valid
+
+        val deviceId = DevicePreferences.getLinkedDeviceId(context)
+        val email = _userEmail.value.ifBlank { DevicePreferences.getLinkedEmail(context) ?: "usuario@hotel.com" }
+
+        if (localValid) {
+            val device = DeviceEntity(
+                name = deviceName,
+                userAssigned = email,
+                deviceId = deviceId,
+                connectionStatus = DeviceConnectionStatus.CONNECTED,
+                realTimeConnectivityStatus = RealTimeConnectivityStatus.ACTIVE,
+                lastHeartbeat = System.currentTimeMillis(),
+                timestamp = System.currentTimeMillis()
+            )
+            repository.insertDevice(device)
+            DeviceDataStoreManager(context).saveDeviceAuthorization(deviceId, email)
+            DevicePreferences.setDeviceLinked(
+                context = context,
+                deviceId = deviceId,
+                email = email,
+                role = "RECEPCION",
+                userName = deviceName
+            )
+            DevicePreferences.setDeviceAuthorized(context, true)
+            DevicePreferences.setLastActiveScreen(context, Screen.RECEPCION.name)
+            com.example.utils.FirebaseManager.registerDeviceInFirestore(context, deviceId, deviceName, "RECEPCION", email)
+            _userMessage.value = "Dispositivo autorizado y vinculado con éxito."
+            return true
+        }
+
+        try {
+            val cloudRes = com.example.utils.FirebaseManager.validatePinOrQr(
+                context = context,
+                input = qrToken,
+                deviceId = deviceId,
+                deviceName = deviceName
+            )
+            if (cloudRes.isSuccess) {
+                val device = DeviceEntity(
+                    name = deviceName,
+                    userAssigned = email,
+                    deviceId = deviceId,
+                    connectionStatus = DeviceConnectionStatus.CONNECTED,
+                    realTimeConnectivityStatus = RealTimeConnectivityStatus.ACTIVE,
+                    lastHeartbeat = System.currentTimeMillis(),
+                    timestamp = System.currentTimeMillis()
+                )
+                repository.insertDevice(device)
+                DeviceDataStoreManager(context).saveDeviceAuthorization(deviceId, email)
+                DevicePreferences.setDeviceLinked(
+                    context = context,
+                    deviceId = deviceId,
+                    email = email,
+                    role = "RECEPCION",
+                    userName = deviceName
+                )
+                DevicePreferences.setDeviceAuthorized(context, true)
+                DevicePreferences.setLastActiveScreen(context, Screen.RECEPCION.name)
+                _userMessage.value = "Dispositivo autorizado y vinculado con éxito en Firebase."
+                return true
+            } else {
+                val reason = cloudRes.exceptionOrNull()?.message ?: "El código QR es inválido o ha expirado."
+                _userMessage.value = reason
+                return false
+            }
+        } catch (e: Exception) {
+            _userMessage.value = "Error al validar con Firebase: ${e.message}"
+            return false
+        }
+    }
+
     fun completeLinkingWithPin(context: Context, inputPin: String, deviceName: String = "Dispositivo Móvil"): Boolean {
         val now = System.currentTimeMillis()
         val validationResult = codeValidator.validatePinCode(
@@ -503,6 +663,16 @@ class DeviceLinkingViewModel @JvmOverloads constructor(
             )
             repository.insertDevice(device)
             DeviceDataStoreManager(context).saveDeviceAuthorization(deviceId, email)
+            DevicePreferences.setDeviceLinked(
+                context = context,
+                deviceId = deviceId,
+                email = email,
+                role = "RECEPCION",
+                userName = deviceName
+            )
+            DevicePreferences.setDeviceAuthorized(context, true)
+            DevicePreferences.setLastActiveScreen(context, Screen.RECEPCION.name)
+            com.example.utils.FirebaseManager.registerDeviceInFirestore(context, deviceId, deviceName, "RECEPCION", email)
             generateNewPin()
             _userMessage.value = "Dispositivo autorizado y vinculado con éxito."
         }
@@ -554,6 +724,16 @@ class DeviceLinkingViewModel @JvmOverloads constructor(
             )
             repository.insertDevice(device)
             DeviceDataStoreManager(context).saveDeviceAuthorization(deviceId, email)
+            DevicePreferences.setDeviceLinked(
+                context = context,
+                deviceId = deviceId,
+                email = email,
+                role = "RECEPCION",
+                userName = deviceName
+            )
+            DevicePreferences.setDeviceAuthorized(context, true)
+            DevicePreferences.setLastActiveScreen(context, Screen.RECEPCION.name)
+            com.example.utils.FirebaseManager.registerDeviceInFirestore(context, deviceId, deviceName, "RECEPCION", email)
             generateNewQrToken()
             _userMessage.value = "Dispositivo autorizado mediante QR con éxito."
         }

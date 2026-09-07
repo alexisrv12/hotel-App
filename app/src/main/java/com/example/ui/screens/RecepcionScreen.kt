@@ -150,7 +150,10 @@ fun RecepcionScreen(
             rooms
         } else {
             val firestoreMap = firestoreRooms.associateBy { it.roomNumber.trim().lowercase() }
-            val mergedFromLocal = rooms.map { localRoom ->
+            val remoteNumbers = firestoreRooms.map { it.roomNumber.trim().lowercase() }.toSet()
+            val mergedFromLocal = rooms
+                .filter { it.roomNumber.trim().lowercase() in remoteNumbers }
+                .map { localRoom ->
                 val fsRoom = firestoreMap[localRoom.roomNumber.trim().lowercase()]
                 if (fsRoom != null) {
                     val convertedStatus = when (fsRoom.status.uppercase()) {
@@ -159,13 +162,19 @@ fun RecepcionScreen(
                         "LIMPIEZA", "CLEANING", "PENDIENTE_LIMPIEZA", "EN_LIMPIEZA" -> RoomStatus.PENDIENTE_LIMPIEZA
                         else -> localRoom.status
                     }
+                    val isAvailableOrCleaning = convertedStatus == RoomStatus.DISPONIBLE || convertedStatus == RoomStatus.PENDIENTE_LIMPIEZA
+                    val effectiveClientName = if (isAvailableOrCleaning) null else (fsRoom.clientName?.takeIf { it.isNotBlank() } ?: localRoom.clientName)
+                    val effectiveClientDpi = if (isAvailableOrCleaning) null else (fsRoom.clientDpi?.takeIf { it.isNotBlank() } ?: localRoom.clientDpi)
+                    val effectiveCheckIn = if (isAvailableOrCleaning) 0L else (if (fsRoom.checkInTimestamp > 0L) fsRoom.checkInTimestamp else localRoom.checkInTimeMillis)
+                    val effectiveCheckOut = if (isAvailableOrCleaning) 0L else (if (fsRoom.checkOutTimestamp > 0L) fsRoom.checkOutTimestamp else localRoom.checkOutTimeMillis)
+
                     localRoom.copy(
                         status = convertedStatus,
                         nightlyRate = if (fsRoom.price > 0.0) fsRoom.price else localRoom.nightlyRate,
-                        clientName = if (!fsRoom.clientName.isNullOrBlank()) fsRoom.clientName else localRoom.clientName,
-                        clientDpi = if (!fsRoom.clientDpi.isNullOrBlank()) fsRoom.clientDpi else localRoom.clientDpi,
-                        checkInTimeMillis = if (fsRoom.checkInTimestamp > 0L) fsRoom.checkInTimestamp else localRoom.checkInTimeMillis,
-                        checkOutTimeMillis = if (fsRoom.checkOutTimestamp > 0L) fsRoom.checkOutTimestamp else localRoom.checkOutTimeMillis,
+                        clientName = effectiveClientName,
+                        clientDpi = effectiveClientDpi,
+                        checkInTimeMillis = effectiveCheckIn,
+                        checkOutTimeMillis = effectiveCheckOut,
                         notes = if (!fsRoom.notes.isNullOrBlank()) fsRoom.notes else localRoom.notes
                     )
                 } else {

@@ -55,6 +55,7 @@ class HotelRepository(private val dao: HotelDao) {
 
     // --- ROOM OPERATIONS ---
     suspend fun getRoomById(id: Long) = dao.getRoomById(id)
+    suspend fun getRoomByNumber(roomNumber: String) = dao.getRoomByNumber(roomNumber)
 
     suspend fun checkInRoom(
         roomId: Long,
@@ -181,6 +182,7 @@ class HotelRepository(private val dao: HotelDao) {
         dao.updateRoom(updatedRoom)
     }
 
+    suspend fun insertRoom(room: RoomEntity) = dao.insertRoom(room)
     suspend fun updateRoomDetails(room: RoomEntity) = dao.updateRoom(room)
 
     suspend fun addRoom(roomNumber: String) {

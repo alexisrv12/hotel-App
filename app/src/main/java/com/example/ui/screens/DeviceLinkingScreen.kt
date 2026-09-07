@@ -404,29 +404,29 @@ fun DeviceLinkingScreen(
                         qrCountdownText = qrCountdownText,
                         linkedDevices = linkedDevices,
                         onGenerateNewPin = {
-                            hotelViewModel.generarTokenVinculacion()
                             if (NetworkConnectivityHelper.isNetworkAvailable(context)) {
-                                viewModel.generateNewPin()
+                                val newPin = viewModel.generateNewPin()
+                                hotelViewModel.setTokenVinculacionPin(newPin, viewModel.currentQrSessionToken.value)
                                 networkFailureMessage = null
                             } else {
                                 networkFailureMessage = "No se pudo generar el PIN: Sin conexión a Internet."
                                 pendingGenerationAction = {
-                                    hotelViewModel.generarTokenVinculacion()
-                                    viewModel.generateNewPin()
+                                    val newPin = viewModel.generateNewPin()
+                                    hotelViewModel.setTokenVinculacionPin(newPin, viewModel.currentQrSessionToken.value)
                                 }
                                 Toast.makeText(context, "Se requiere conexión a Internet.", Toast.LENGTH_LONG).show()
                             }
                         },
                         onGenerateNewQr = {
-                            hotelViewModel.generarTokenVinculacion()
                             if (NetworkConnectivityHelper.isNetworkAvailable(context)) {
-                                viewModel.generateNewQrToken()
+                                val newQr = viewModel.generateNewQrToken()
+                                hotelViewModel.setTokenVinculacionPin(viewModel.currentPin.value, newQr)
                                 networkFailureMessage = null
                             } else {
                                 networkFailureMessage = "No se pudo generar el QR: Sin conexión a Internet."
                                 pendingGenerationAction = {
-                                    hotelViewModel.generarTokenVinculacion()
-                                    viewModel.generateNewQrToken()
+                                    val newQr = viewModel.generateNewQrToken()
+                                    hotelViewModel.setTokenVinculacionPin(viewModel.currentPin.value, newQr)
                                 }
                                 Toast.makeText(context, "Se requiere conexión a Internet.", Toast.LENGTH_LONG).show()
                             }

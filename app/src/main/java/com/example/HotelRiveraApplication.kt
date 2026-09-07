@@ -11,13 +11,13 @@ class HotelRiveraApplication : Application() {
     override fun onCreate() {
         super.onCreate()
 
-        // 1. Asegurar la inicialización de Firebase
+        // 1. Asegurar la inicialización robusta de Firebase
         try {
             if (FirebaseApp.getApps(this).isEmpty()) {
                 val app = FirebaseApp.initializeApp(this)
                 if (app == null) {
                     val options = FirebaseOptions.Builder()
-                        .setApplicationId("com.aistudio.hotelrivera.app")
+                        .setApplicationId("1:571595793156:android:d59304a53ceea8138d2651")
                         .setProjectId("manager-hotel-r")
                         .setApiKey("AIzaSyAl18319cmBD2io7hCs9vlP1o9jXgM0PVQ")
                         .setStorageBucket("manager-hotel-r.firebasestorage.app")
@@ -30,7 +30,7 @@ class HotelRiveraApplication : Application() {
             Log.w("HotelRiveraApp", "Inicialización fallback de FirebaseApp: ${e.message}")
             try {
                 val options = FirebaseOptions.Builder()
-                    .setApplicationId("com.aistudio.hotelrivera.app")
+                    .setApplicationId("1:571595793156:android:d59304a53ceea8138d2651")
                     .setProjectId("manager-hotel-r")
                     .setApiKey("AIzaSyAl18319cmBD2io7hCs9vlP1o9jXgM0PVQ")
                     .setStorageBucket("manager-hotel-r.firebasestorage.app")
@@ -39,6 +39,12 @@ class HotelRiveraApplication : Application() {
             } catch (ex: Exception) {
                 Log.e("HotelRiveraApp", "Error al inicializar FirebaseApp fallback: ${ex.message}")
             }
+        }
+
+        try {
+            com.example.utils.FirebaseManager.getFirestore(this)
+        } catch (e: Exception) {
+            Log.w("HotelRiveraApp", "Firestore pre-warming: ${e.message}")
         }
 
         // 2. Crear canales de notificación del sistema
