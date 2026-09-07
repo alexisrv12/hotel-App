@@ -2,6 +2,7 @@ package com.example.ui.viewmodel
 
 import android.app.Application
 import android.content.Context
+import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.data.database.HotelDatabase
@@ -151,6 +152,30 @@ class DeviceLinkingViewModel @JvmOverloads constructor(
                 generateNewQrToken()
             }
 
+            // Escuchar en tiempo real los dispositivos vinculados desde Firebase Firestore
+            try {
+                com.example.utils.FirebaseManager.observeLinkedDevices(application) { cloudDevices ->
+                    viewModelScope.launch {
+                        for (d in cloudDevices) {
+                            val existing = repository.getDeviceByDeviceId(d.deviceId)
+                            if (existing == null) {
+                                repository.insertDevice(d)
+                            } else if (existing.connectionStatus != d.connectionStatus || existing.realTimeConnectivityStatus != d.realTimeConnectivityStatus) {
+                                repository.updateDevice(
+                                    existing.copy(
+                                        connectionStatus = d.connectionStatus,
+                                        realTimeConnectivityStatus = d.realTimeConnectivityStatus,
+                                        lastHeartbeat = d.lastHeartbeat
+                                    )
+                                )
+                            }
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+                Log.w("DeviceLinkingVM", "Aviso observando dispositivos Firebase: ${e.message}")
+            }
+
             // Ticker loop updating countdown strings every second
             while (isActive) {
                 val currTime = System.currentTimeMillis()
@@ -170,7 +195,7 @@ class DeviceLinkingViewModel @JvmOverloads constructor(
     }
 
     /**
-     * Generates a new 6-digit secure PIN for device pairing session and persists it in DB.
+     * Generates a new 6-digit secure PIN for device pairing session and persists it in DB and Firestore.
      */
     fun generateNewPin(): String {
         val pin = DeviceLinkingUtility.generate6DigitPin()
@@ -180,12 +205,18 @@ class DeviceLinkingViewModel @JvmOverloads constructor(
         viewModelScope.launch {
             hotelDao.insertSetting(com.example.data.entities.HotelSettingEntity("active_linking_pin", pin))
             hotelDao.insertSetting(com.example.data.entities.HotelSettingEntity("active_linking_pin_ts", now.toString()))
+            com.example.utils.FirebaseManager.createVinculacionSession(
+                context = getApplication(),
+                pin = pin,
+                qrToken = _currentQrSessionToken.value,
+                role = "RECEPCION"
+            )
         }
         return pin
     }
 
     /**
-     * Generates a new Base64 temporary QR code session string token and persists it in DB.
+     * Generates a new Base64 temporary QR code session string token and persists it in DB and Firestore.
      */
     fun generateNewQrToken(deviceId: String = "DEV-" + (1000..9999).random()): String {
         val qrToken = linkingUtility.generateTemporarySessionQrString(deviceId)
@@ -195,30 +226,78 @@ class DeviceLinkingViewModel @JvmOverloads constructor(
         viewModelScope.launch {
             hotelDao.insertSetting(com.example.data.entities.HotelSettingEntity("active_linking_qr", qrToken))
             hotelDao.insertSetting(com.example.data.entities.HotelSettingEntity("active_linking_qr_ts", now.toString()))
+            com.example.utils.FirebaseManager.createVinculacionSession(
+                context = getApplication(),
+                pin = _currentPin.value,
+                qrToken = qrToken,
+                role = "RECEPCION"
+            )
         }
         return qrToken
     }
 
     /**
-     * Validates input PIN code against the expected PIN or current session PIN.
+     * Validates input PIN code against the expected PIN or cloud session in Firebase Firestore.
      */
     fun validatePin(inputPin: String, expectedPin: String = _currentPin.value): PinValidationResult {
-        val result = DeviceLinkingUtils.validatePinCode(inputPin, expectedPin)
-        _pinValidationResult.value = result
-        return result
+        val localResult = DeviceLinkingUtils.validatePinCode(inputPin, expectedPin)
+        if (localResult is PinValidationResult.Valid) {
+            _pinValidationResult.value = localResult
+            return localResult
+        }
+
+        _pinValidationResult.value = localResult
+
+        // Validar también asíncronamente con Firebase Firestore para admitir vinculación entre múltiples dispositivos
+        viewModelScope.launch {
+            try {
+                val res = com.example.utils.FirebaseManager.validatePinOrQr(
+                    context = getApplication(),
+                    input = inputPin,
+                    deviceId = "DEV-${System.currentTimeMillis().toString().takeLast(6)}",
+                    deviceName = "Terminal Recepción"
+                )
+                if (res.isSuccess) {
+                    _pinValidationResult.value = PinValidationResult.Valid
+                    _userMessage.value = "PIN validado exitosamente en Firebase."
+                }
+            } catch (e: Exception) {
+                Log.w("DeviceLinkingVM", "Validación PIN Firebase: ${e.message}")
+            }
+        }
+
+        return localResult
     }
 
     /**
-     * Decodes a Base64-encoded QR token string and updates state.
+     * Decodes a Base64-encoded QR token string and validates against Firebase Firestore.
      */
     fun decodeQrToken(token: String): String? {
         val decoded = linkingUtility.decodeTemporarySessionQrString(token)
         _decodedQrSessionPayload.value = decoded
+
+        viewModelScope.launch {
+            try {
+                val res = com.example.utils.FirebaseManager.validatePinOrQr(
+                    context = getApplication(),
+                    input = token,
+                    deviceId = "DEV-${System.currentTimeMillis().toString().takeLast(6)}",
+                    deviceName = "Terminal Recepción"
+                )
+                if (res.isSuccess) {
+                    _pinValidationResult.value = PinValidationResult.Valid
+                    _userMessage.value = "Código QR validado exitosamente en Firebase."
+                }
+            } catch (e: Exception) {
+                Log.w("DeviceLinkingVM", "Validación QR Firebase: ${e.message}")
+            }
+        }
+
         return decoded
     }
 
     /**
-     * Links a new device and persists its entity in the database via repository.
+     * Links a new device and persists its entity in Room and Firebase Firestore.
      */
     fun linkDevice(
         name: String,
@@ -238,7 +317,14 @@ class DeviceLinkingViewModel @JvmOverloads constructor(
                 timestamp = System.currentTimeMillis()
             )
             repository.insertDevice(device)
-            _userMessage.value = "Dispositivo '$name' vinculado con éxito."
+            com.example.utils.FirebaseManager.registerDeviceInFirestore(
+                context = getApplication(),
+                deviceId = deviceId,
+                deviceName = name,
+                role = "RECEPCION",
+                userAssigned = userAssigned
+            )
+            _userMessage.value = "Dispositivo '$name' vinculado con éxito en Firebase y localmente."
             generateNewPin()
             generateNewQrToken(deviceId)
         }
@@ -480,13 +566,14 @@ class DeviceLinkingViewModel @JvmOverloads constructor(
     fun unlinkDevice(device: DeviceEntity, context: Context? = null) {
         viewModelScope.launch {
             repository.deleteDevice(device)
+            com.example.utils.FirebaseManager.revokeDeviceInFirestore(getApplication(), device.deviceId)
             if (context != null) {
                 val currentLocalId = DevicePreferences.getLinkedDeviceId(context)
                 if (device.deviceId == currentLocalId) {
                     DeviceDataStoreManager(context).clearDeviceAuthorization()
                 }
             }
-            _userMessage.value = "Dispositivo '${device.name}' desvinculado."
+            _userMessage.value = "Dispositivo '${device.name}' desvinculado y revocado en Firebase."
         }
     }
 

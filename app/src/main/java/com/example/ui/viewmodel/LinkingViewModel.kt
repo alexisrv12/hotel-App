@@ -2,20 +2,26 @@ package com.example.ui.viewmodel
 
 import android.app.Application
 import android.content.Context
+import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.data.database.HotelDatabase
 import com.example.data.entities.DeviceConnectionStatus
 import com.example.data.entities.DeviceEntity
 import com.example.data.entities.RealTimeConnectivityStatus
+import com.example.data.entities.RoomEntity
+import com.example.data.entities.RoomStatus
 import com.example.data.repository.DeviceRepository
 import com.example.data.repository.SessionDataStoreRepository
 import com.example.ui.Screen
 import com.example.utils.DeviceCodeValidationHelper
 import com.example.utils.DeviceDataStoreManager
 import com.example.utils.DevicePreferences
+import com.example.utils.FirebaseManager
 import com.example.utils.QrScannerManager
 import com.example.utils.ScannedQrData
+import com.google.firebase.Firebase
+import com.google.firebase.firestore.firestore
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -25,6 +31,7 @@ import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.tasks.await
 import java.security.SecureRandom
 
 sealed class LinkingUiState {
@@ -143,6 +150,12 @@ class LinkingViewModel(application: Application) : AndroidViewModel(application)
         _pinTimestamp.value = now
         viewModelScope.launch {
             sessionRepo.saveActiveLinkingPin(newPin, now)
+            FirebaseManager.createVinculacionSession(
+                context = getApplication(),
+                pin = newPin,
+                qrToken = _activeManagerQr.value,
+                role = "RECEPCION"
+            )
         }
     }
 
@@ -153,11 +166,17 @@ class LinkingViewModel(application: Application) : AndroidViewModel(application)
         _qrTimestamp.value = now
         viewModelScope.launch {
             sessionRepo.saveActiveLinkingQr(newQr, now)
+            FirebaseManager.createVinculacionSession(
+                context = getApplication(),
+                pin = _activeManagerPin.value,
+                qrToken = newQr,
+                role = "RECEPCION"
+            )
         }
     }
 
     /**
-     * Links a device using the entered PIN.
+     * Links a device using the entered PIN validating against Firebase Firestore in the cloud.
      */
     fun linkWithPin(context: Context, deviceName: String = "Terminal Móvil") {
         val enteredPin = _pinInput.value.trim()
@@ -166,24 +185,52 @@ class LinkingViewModel(application: Application) : AndroidViewModel(application)
             return
         }
 
-        val now = System.currentTimeMillis()
-        val isPinValid = enteredPin == _activeManagerPin.value && (now - _pinTimestamp.value <= 120_000L)
+        val deviceId = DevicePreferences.getLinkedDeviceId(context)
+        _uiState.value = LinkingUiState.Validating("Verificando PIN en Firebase...")
 
-        if (!isPinValid) {
-            _uiState.value = LinkingUiState.Error("PIN no válido o ha expirado. Solicite un nuevo PIN en Gerencia.")
-            return
+        viewModelScope.launch {
+            try {
+                // 1. Validar contra la base en la nube de Firebase Firestore
+                val cloudValidationResult = FirebaseManager.validatePinOrQr(
+                    context = context,
+                    input = enteredPin,
+                    deviceId = deviceId,
+                    deviceName = deviceName
+                )
+
+                val now = System.currentTimeMillis()
+                val isLocalPinMatch = (enteredPin == _activeManagerPin.value && (now - _pinTimestamp.value <= 15 * 60 * 1000L))
+
+                if (cloudValidationResult.isSuccess) {
+                    val token = cloudValidationResult.getOrNull()
+                    val role = token?.rol?.ifBlank { "RECEPCION" } ?: "RECEPCION"
+                    executeLinkingProcess(
+                        context = context,
+                        role = role,
+                        token = token?.pin ?: enteredPin,
+                        deviceName = deviceName
+                    )
+                } else if (isLocalPinMatch) {
+                    executeLinkingProcess(
+                        context = context,
+                        role = "RECEPCION",
+                        token = enteredPin,
+                        deviceName = deviceName
+                    )
+                } else {
+                    val errorReason = cloudValidationResult.exceptionOrNull()?.message
+                        ?: "PIN no válido o ha expirado. Solicite un nuevo PIN en Gerencia."
+                    _uiState.value = LinkingUiState.Error(errorReason)
+                }
+            } catch (e: Exception) {
+                Log.e("LinkingViewModel", "Excepción al vincular por PIN: ${e.message}", e)
+                _uiState.value = LinkingUiState.Error("Error de conexión: ${e.localizedMessage ?: e.message}")
+            }
         }
-
-        executeLinkingProcess(
-            context = context,
-            role = "RECEPCION",
-            token = enteredPin,
-            deviceName = deviceName
-        )
     }
 
     /**
-     * Processes scanned QR data from the QrScannerManager / ZXing Intent.
+     * Processes scanned QR data from the QrScannerManager / ZXing Intent, validating against Firebase.
      */
     fun processScannedQr(context: Context, rawResult: String?, deviceName: String = "Terminal Móvil") {
         if (rawResult.isNullOrBlank()) {
@@ -197,29 +244,65 @@ class LinkingViewModel(application: Application) : AndroidViewModel(application)
             return
         }
 
-        val now = System.currentTimeMillis()
-        val isQrMatch = scannedData.token == _activeManagerQr.value ||
-                scannedData.rawContent.contains(_activeManagerQr.value) ||
-                scannedData.token.startsWith("RIVERA-LINK-")
+        val deviceId = DevicePreferences.getLinkedDeviceId(context)
+        _uiState.value = LinkingUiState.Validating("Validando código QR con Firebase...")
 
-        val isExpired = now - _qrTimestamp.value > 120_000L
+        viewModelScope.launch {
+            try {
+                // 1. Buscar primero por el token del QR en Firestore
+                var cloudResult = FirebaseManager.validatePinOrQr(
+                    context = context,
+                    input = scannedData.token,
+                    deviceId = deviceId,
+                    deviceName = scannedData.deviceName ?: deviceName
+                )
 
-        if (isExpired && !scannedData.token.startsWith("RIVERA-LINK-")) {
-            _uiState.value = LinkingUiState.Error("El código QR ha expirado. Genere uno nuevo.")
-            return
+                // Si no se encontró por token, intentar con el contenido crudo (que puede ser o incluir PIN)
+                if (cloudResult.isFailure && scannedData.rawContent.isNotBlank() && scannedData.rawContent != scannedData.token) {
+                    cloudResult = FirebaseManager.validatePinOrQr(
+                        context = context,
+                        input = scannedData.rawContent,
+                        deviceId = deviceId,
+                        deviceName = scannedData.deviceName ?: deviceName
+                    )
+                }
+
+                val now = System.currentTimeMillis()
+                val isLocalMatch = scannedData.token == _activeManagerQr.value ||
+                        scannedData.rawContent.contains(_activeManagerQr.value) ||
+                        scannedData.token.startsWith("RIVERA-LINK-")
+
+                if (cloudResult.isSuccess) {
+                    val token = cloudResult.getOrNull()
+                    val role = token?.rol?.ifBlank { scannedData.role.ifBlank { "RECEPCION" } } ?: "RECEPCION"
+                    executeLinkingProcess(
+                        context = context,
+                        role = role,
+                        token = token?.qrToken ?: scannedData.token,
+                        deviceName = scannedData.deviceName ?: deviceName
+                    )
+                } else if (isLocalMatch) {
+                    executeLinkingProcess(
+                        context = context,
+                        role = scannedData.role.ifBlank { "RECEPCION" },
+                        token = scannedData.token,
+                        deviceName = scannedData.deviceName ?: deviceName
+                    )
+                } else {
+                    val errorReason = cloudResult.exceptionOrNull()?.message
+                        ?: "Código QR no válido o expirado. Genere uno nuevo en Gerencia."
+                    _uiState.value = LinkingUiState.Error(errorReason)
+                }
+            } catch (e: Exception) {
+                Log.e("LinkingViewModel", "Excepción al validar QR: ${e.message}", e)
+                _uiState.value = LinkingUiState.Error("Error al procesar QR: ${e.localizedMessage ?: e.message}")
+            }
         }
-
-        executeLinkingProcess(
-            context = context,
-            role = scannedData.role.ifBlank { "RECEPCION" },
-            token = scannedData.token,
-            deviceName = scannedData.deviceName ?: deviceName
-        )
     }
 
     /**
      * Executes validation, animated initial synchronization, persistence in DataStore + Room,
-     * and triggers navigation transition towards the matching role screen.
+     * sincroniza habitaciones desde Firebase Firestore y transiciona a la pantalla correspondiente.
      */
     private fun executeLinkingProcess(
         context: Context,
@@ -229,21 +312,66 @@ class LinkingViewModel(application: Application) : AndroidViewModel(application)
     ) {
         viewModelScope.launch {
             _uiState.value = LinkingUiState.Validating("Verificando token criptográfico con Estación Central...")
-            delay(500)
-
-            _uiState.value = LinkingUiState.Syncing(0.2f, "Estableciendo canal seguro SSL/TLS...")
             delay(400)
 
-            _uiState.value = LinkingUiState.Syncing(0.5f, "Descargando tarifas y configuración de habitaciones...")
-            delay(500)
-
-            _uiState.value = LinkingUiState.Syncing(0.85f, "Sincronizando inventario y catálogo de recepción...")
-            delay(400)
-
-            // Save in DataStore and Room
+            _uiState.value = LinkingUiState.Syncing(0.25f, "Estableciendo canal seguro con Firebase Firestore...")
             val deviceId = DevicePreferences.getLinkedDeviceId(context)
             val email = "terminal.${role.lowercase()}@hotelrivera.com"
 
+            // Registrar terminal en Firebase Firestore para que Gerencia lo vea de inmediato
+            try {
+                FirebaseManager.registerDeviceInFirestore(
+                    context = context,
+                    deviceId = deviceId,
+                    deviceName = deviceName,
+                    role = role,
+                    userAssigned = email
+                )
+            } catch (e: Exception) {
+                Log.w("LinkingViewModel", "Aviso al registrar terminal en Firestore: ${e.message}")
+            }
+
+            _uiState.value = LinkingUiState.Syncing(0.6f, "Sincronizando habitaciones e inventario desde la nube...")
+            try {
+                // Descargar habitaciones desde Firebase Firestore y volcarlas a SQLite Room
+                val firestore = FirebaseManager.getFirestore(context)
+                val snapshot = firestore.collection(FirebaseManager.COLLECTION_HABITACIONES).get().await()
+                if (snapshot != null && !snapshot.isEmpty) {
+                    val hotelDao = HotelDatabase.getDatabase(context).hotelDao()
+                    for (doc in snapshot.documents) {
+                        try {
+                            val num = doc.getString("numero") ?: doc.getString("roomNumber") ?: doc.id
+                            val estadoStr = doc.getString("estado") ?: doc.getString("status") ?: "Disponible"
+                            val precio = doc.getDouble("precio") ?: doc.getDouble("price") ?: 150.0
+                            val cliente = doc.getString("clientName")
+                            val dpi = doc.getString("clientDpi")
+
+                            val mappedStatus = when {
+                                estadoStr.contains("Ocup", ignoreCase = true) -> RoomStatus.OCUPADA
+                                estadoStr.contains("Limp", ignoreCase = true) -> RoomStatus.PENDIENTE_LIMPIEZA
+                                else -> RoomStatus.DISPONIBLE
+                            }
+
+                            val existingRoom = hotelDao.getRoomByNumber(num)
+                            val roomEntity = (existingRoom ?: RoomEntity(roomNumber = num, nightlyRate = precio)).copy(
+                                status = mappedStatus,
+                                clientName = cliente,
+                                clientDpi = dpi,
+                                nightlyRate = precio
+                            )
+                            hotelDao.insertRoom(roomEntity)
+                        } catch (e: Exception) {
+                            Log.w("LinkingViewModel", "Error procesando habitación: ${e.message}")
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+                Log.w("LinkingViewModel", "Aviso al sincronizar habitaciones de Firestore: ${e.message}")
+            }
+
+            _uiState.value = LinkingUiState.Syncing(0.9f, "Guardando credenciales locales seguras...")
+
+            // Save in DataStore and Room
             sessionRepo.saveDeviceAuthorization(
                 deviceId = deviceId,
                 role = role,
@@ -272,11 +400,11 @@ class LinkingViewModel(application: Application) : AndroidViewModel(application)
             )
             deviceRepo.insertDevice(deviceEntity)
 
-            // Regenerate tokens to invalidate used ones
+            // Regenerate tokens in Gerencia
             refreshActivePin()
             refreshActiveQr()
 
-            _uiState.value = LinkingUiState.Syncing(1.0f, "¡Sincronización completada exitosamente!")
+            _uiState.value = LinkingUiState.Syncing(1.0f, "¡Dispositivo vinculado con éxito!")
             delay(300)
 
             val targetScreen = if (role.equals("GERENTE", ignoreCase = true) || role.equals("ADMIN", ignoreCase = true)) {
@@ -291,7 +419,7 @@ class LinkingViewModel(application: Application) : AndroidViewModel(application)
                 targetScreen = targetScreen
             )
 
-            delay(600)
+            delay(500)
             _navigationEvent.emit(targetScreen)
         }
     }

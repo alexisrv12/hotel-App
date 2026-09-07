@@ -1394,26 +1394,19 @@ class HotelViewModel(application: Application) : AndroidViewModel(application) {
 
         viewModelScope.launch {
             try {
-                ensureFirebaseInitialized()
-                val token = VinculacionToken(
+                val tokenResult = com.example.utils.FirebaseManager.createVinculacionSession(
+                    context = getApplication(),
                     pin = nuevoPin,
                     qrToken = nuevoQrToken,
-                    fechaCreacion = System.currentTimeMillis(),
-                    activo = true
+                    role = "RECEPCION"
                 )
-                val docRef = firestore.collection("vinculaciones").document(nuevoPin)
-                val tokenConId = token.copy(id = docRef.id)
-
-                docRef.set(tokenConId)
-                    .addOnSuccessListener {
-                        Log.d("HotelViewModel", "Token de vinculación guardado en Firestore: ${docRef.id}")
-                        _tokenVinculacion.value = tokenConId
-                        _estadoVinculacion.value = "PIN Generado: $nuevoPin"
-                    }
-                    .addOnFailureListener { e ->
-                        Log.e("HotelViewModel", "Error al guardar token: ${e.message}", e)
-                        _estadoVinculacion.value = "Error Firebase: ${e.localizedMessage}"
-                    }
+                val token = tokenResult.getOrNull()
+                if (token != null) {
+                    _tokenVinculacion.value = token
+                    _estadoVinculacion.value = "PIN Generado: $nuevoPin (Válido por 15 min)"
+                } else {
+                    _estadoVinculacion.value = "PIN Generado localmente: $nuevoPin"
+                }
             } catch (e: Exception) {
                 Log.e("HotelViewModel", "Error al generar token de vinculación: ${e.message}", e)
                 _estadoVinculacion.value = "Error al generar token: ${e.message}"
@@ -1428,52 +1421,44 @@ class HotelViewModel(application: Application) : AndroidViewModel(application) {
             return
         }
 
+        _estadoVinculacion.value = "Validando con Firebase..."
         viewModelScope.launch {
             try {
-                ensureFirebaseInitialized()
-                firestore.collection("vinculaciones").document(busqueda)
-                    .get()
-                    .addOnSuccessListener { document ->
-                        if (document.exists() && document.getBoolean("activo") == true) {
-                            _estadoVinculacion.value = "Vinculación Exitosa"
-                            onVinculado?.invoke()
-                        } else {
-                            // Buscar por campo 'qrToken' o 'pin' si no se guardó por document ID
-                            firestore.collection("vinculaciones")
-                                .whereEqualTo("qrToken", busqueda)
-                                .whereEqualTo("activo", true)
-                                .get()
-                                .addOnSuccessListener { qrSnapshots ->
-                                    if (qrSnapshots != null && !qrSnapshots.isEmpty) {
-                                        _estadoVinculacion.value = "Vinculación Exitosa"
-                                        onVinculado?.invoke()
-                                    } else {
-                                        _estadoVinculacion.value = "PIN o Token inválido, inactivo o revocado"
-                                    }
-                                }
-                                .addOnFailureListener { e ->
-                                    _estadoVinculacion.value = "Error de red: ${e.localizedMessage}"
-                                }
-                        }
-                    }
-                    .addOnFailureListener { e ->
-                        _estadoVinculacion.value = "Error de red: ${e.localizedMessage}"
-                    }
+                val deviceId = com.example.utils.DevicePreferences.getLinkedDeviceId(getApplication())
+                val result = com.example.utils.FirebaseManager.validatePinOrQr(
+                    context = getApplication(),
+                    input = busqueda,
+                    deviceId = deviceId,
+                    deviceName = "Terminal Recepción"
+                )
+
+                if (result.isSuccess) {
+                    _estadoVinculacion.value = "¡Vinculación Exitosa!"
+                    onVinculado?.invoke()
+                } else {
+                    val errorMsg = result.exceptionOrNull()?.message ?: "PIN o Token inválido, inactivo o expirado"
+                    _estadoVinculacion.value = errorMsg
+                }
             } catch (e: Exception) {
-                _estadoVinculacion.value = "Error de conexión: ${e.localizedMessage}"
+                _estadoVinculacion.value = "Error de conexión: ${e.localizedMessage ?: e.message}"
             }
         }
     }
 
     fun revocarDispositivo(pinDispositivo: String) {
-        firestore.collection("vinculaciones").document(pinDispositivo)
-            .update("activo", false)
-            .addOnSuccessListener {
-                _estadoVinculacion.value = "Dispositivo bloqueado y sesión eliminada con éxito"
+        viewModelScope.launch {
+            try {
+                val success = com.example.utils.FirebaseManager.revokeVinculacionSession(getApplication(), pinDispositivo)
+                com.example.utils.FirebaseManager.revokeDeviceInFirestore(getApplication(), pinDispositivo)
+                if (success) {
+                    _estadoVinculacion.value = "Dispositivo bloqueado y sesión eliminada con éxito"
+                } else {
+                    _estadoVinculacion.value = "Dispositivo revocado"
+                }
+            } catch (e: Exception) {
+                _estadoVinculacion.value = "Error al revocar: ${e.localizedMessage ?: e.message}"
             }
-            .addOnFailureListener { e ->
-                _estadoVinculacion.value = "Error al bloquear dispositivo: ${e.localizedMessage}"
-            }
+        }
     }
 
     fun iniciarEscuchaEspejoSeguro(pinSesion: String) {

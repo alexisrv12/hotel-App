@@ -7,5 +7,11 @@ data class VinculacionToken(
     val pin: String = "",
     val qrToken: String = "",
     val fechaCreacion: Long = System.currentTimeMillis(),
-    val activo: Boolean = true
+    val fechaExpiracion: Long = System.currentTimeMillis() + 15 * 60 * 1000L,
+    val activo: Boolean = true,
+    val estado: String = "PENDIENTE",
+    val hotelName: String = "Hotel Rivera",
+    val rol: String = "RECEPCION",
+    val dispositivoVinculadoId: String = "",
+    val dispositivoVinculadoNombre: String = ""
 )
