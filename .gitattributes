@@ -1,0 +1,8 @@
+# Prevent git from corrupting binary files on checkout or commit
+*.jar binary
+*.keystore binary
+*.apk binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.webp binary
