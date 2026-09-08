@@ -687,12 +687,11 @@ class DeviceLinkingViewModel @JvmOverloads constructor(
                 _userMessage.value = validationResult.reason
                 return false
             }
-            is CodeValidationResult.Expired -> {
-                _userMessage.value = "El PIN ha expirado (válido por 2 min). Genere uno nuevo desde el panel de Gerente."
-                return false
-            }
-            is CodeValidationResult.Incorrect -> {
-                _userMessage.value = "El PIN ingresado es incorrecto. Verifique el PIN con Gerencia."
+            is CodeValidationResult.Expired, is CodeValidationResult.Incorrect -> {
+                viewModelScope.launch {
+                    completeLinkingWithPinAsync(context, inputPin, deviceName)
+                }
+                _userMessage.value = "Verificando PIN en Firestore..."
                 return false
             }
             is CodeValidationResult.Valid -> {
@@ -748,12 +747,11 @@ class DeviceLinkingViewModel @JvmOverloads constructor(
                 _userMessage.value = "Ingrese o escanee un código QR."
                 return false
             }
-            is CodeValidationResult.Expired -> {
-                _userMessage.value = "El token QR ha expirado (válido por 2 min). Genere uno nuevo en la consola."
-                return false
-            }
-            is CodeValidationResult.Incorrect, is CodeValidationResult.InvalidFormat -> {
-                _userMessage.value = "El código QR es inválido o no corresponde al hotel."
+            is CodeValidationResult.Expired, is CodeValidationResult.Incorrect, is CodeValidationResult.InvalidFormat -> {
+                viewModelScope.launch {
+                    completeLinkingWithQrAsync(context, qrToken, deviceName)
+                }
+                _userMessage.value = "Verificando QR en Firestore..."
                 return false
             }
             is CodeValidationResult.Valid -> {

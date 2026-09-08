@@ -1982,7 +1982,10 @@ class HotelViewModel(application: Application) : AndroidViewModel(application) {
                 )
 
                 if (result.isSuccess) {
+                    val token = result.getOrNull()
+                    val assignedRole = token?.rol ?: "RECEPCION"
                     _estadoVinculacion.value = "¡Vinculación Exitosa!"
+                    onDeviceLinkedSuccessfully(assignedRole)
                     onVinculado?.invoke()
                 } else {
                     val errorMsg = result.exceptionOrNull()?.message ?: "PIN o Token inválido, inactivo o expirado"

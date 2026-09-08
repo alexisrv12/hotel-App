@@ -416,12 +416,14 @@ private fun DeviceLinkingOptionsDialog(
             if (!decoded.isNullOrBlank()) {
                 qrInput = decoded
                 errorMessage = null
-                val success = deviceLinkingViewModel.completeLinkingWithQr(context, decoded)
-                if (success) {
-                    Toast.makeText(context, "Dispositivo vinculado correctamente con imagen QR.", Toast.LENGTH_SHORT).show()
-                    onLinkingSuccess()
-                } else {
-                    errorMessage = "El código QR en la imagen no es válido o ha expirado."
+                coroutineScope.launch {
+                    val success = deviceLinkingViewModel.completeLinkingWithQrAsync(context, decoded)
+                    if (success) {
+                        Toast.makeText(context, "Dispositivo vinculado correctamente con imagen QR.", Toast.LENGTH_SHORT).show()
+                        onLinkingSuccess()
+                    } else {
+                        errorMessage = deviceLinkingViewModel.userMessage.value ?: "El código QR en la imagen no es válido o ha expirado."
+                    }
                 }
             } else {
                 errorMessage = "No se pudo detectar un código QR legible en la imagen seleccionada."
@@ -530,12 +532,14 @@ private fun DeviceLinkingOptionsDialog(
                                         isCameraActive = false
                                         qrInput = scannedText
                                         errorMessage = null
-                                        val success = deviceLinkingViewModel.completeLinkingWithQr(context, scannedText)
-                                        if (success) {
-                                            Toast.makeText(context, "Dispositivo vinculado inmediatamente.", Toast.LENGTH_SHORT).show()
-                                            onLinkingSuccess()
-                                        } else {
-                                            errorMessage = "Código QR no válido o expirado."
+                                        coroutineScope.launch {
+                                            val success = deviceLinkingViewModel.completeLinkingWithQrAsync(context, scannedText)
+                                            if (success) {
+                                                Toast.makeText(context, "Dispositivo vinculado inmediatamente.", Toast.LENGTH_SHORT).show()
+                                                onLinkingSuccess()
+                                            } else {
+                                                errorMessage = deviceLinkingViewModel.userMessage.value ?: "Código QR no válido o expirado."
+                                            }
                                         }
                                     },
                                     onCloseScanner = { isCameraActive = false }
