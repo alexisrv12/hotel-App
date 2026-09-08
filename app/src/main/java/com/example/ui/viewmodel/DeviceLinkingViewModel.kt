@@ -252,15 +252,41 @@ class DeviceLinkingViewModel @JvmOverloads constructor(
         // Validar también asíncronamente con Firebase Firestore para admitir vinculación entre múltiples dispositivos
         viewModelScope.launch {
             try {
+                val context = getApplication<Application>()
+                val deviceId = DevicePreferences.getLinkedDeviceId(context)
+                val deviceName = "Terminal Recepción"
+                val email = _userEmail.value.ifBlank { DevicePreferences.getLinkedEmail(context) ?: "recepcion@hotelrivera.com" }
+
                 val res = com.example.utils.FirebaseManager.validatePinOrQr(
-                    context = getApplication(),
+                    context = context,
                     input = inputPin,
-                    deviceId = "DEV-${System.currentTimeMillis().toString().takeLast(6)}",
-                    deviceName = "Terminal Recepción"
+                    deviceId = deviceId,
+                    deviceName = deviceName
                 )
                 if (res.isSuccess) {
+                    val device = DeviceEntity(
+                        name = deviceName,
+                        userAssigned = email,
+                        deviceId = deviceId,
+                        connectionStatus = DeviceConnectionStatus.CONNECTED,
+                        realTimeConnectivityStatus = RealTimeConnectivityStatus.ACTIVE,
+                        lastHeartbeat = System.currentTimeMillis(),
+                        timestamp = System.currentTimeMillis()
+                    )
+                    repository.insertDevice(device)
+                    DeviceDataStoreManager(context).saveDeviceAuthorization(deviceId, email)
+                    DevicePreferences.setDeviceLinked(
+                        context = context,
+                        deviceId = deviceId,
+                        email = email,
+                        role = "RECEPCION",
+                        userName = deviceName
+                    )
+                    DevicePreferences.setDeviceAuthorized(context, true)
+                    DevicePreferences.setLastActiveScreen(context, Screen.RECEPCION.name)
+
                     _pinValidationResult.value = PinValidationResult.Valid
-                    _userMessage.value = "PIN validado exitosamente en Firebase."
+                    _userMessage.value = "PIN validado y dispositivo vinculado exitosamente en Firebase."
                 }
             } catch (e: Exception) {
                 Log.w("DeviceLinkingVM", "Validación PIN Firebase: ${e.message}")
@@ -279,15 +305,41 @@ class DeviceLinkingViewModel @JvmOverloads constructor(
 
         viewModelScope.launch {
             try {
+                val context = getApplication<Application>()
+                val deviceId = DevicePreferences.getLinkedDeviceId(context)
+                val deviceName = "Terminal Recepción"
+                val email = _userEmail.value.ifBlank { DevicePreferences.getLinkedEmail(context) ?: "recepcion@hotelrivera.com" }
+
                 val res = com.example.utils.FirebaseManager.validatePinOrQr(
-                    context = getApplication(),
+                    context = context,
                     input = token,
-                    deviceId = "DEV-${System.currentTimeMillis().toString().takeLast(6)}",
-                    deviceName = "Terminal Recepción"
+                    deviceId = deviceId,
+                    deviceName = deviceName
                 )
                 if (res.isSuccess) {
+                    val device = DeviceEntity(
+                        name = deviceName,
+                        userAssigned = email,
+                        deviceId = deviceId,
+                        connectionStatus = DeviceConnectionStatus.CONNECTED,
+                        realTimeConnectivityStatus = RealTimeConnectivityStatus.ACTIVE,
+                        lastHeartbeat = System.currentTimeMillis(),
+                        timestamp = System.currentTimeMillis()
+                    )
+                    repository.insertDevice(device)
+                    DeviceDataStoreManager(context).saveDeviceAuthorization(deviceId, email)
+                    DevicePreferences.setDeviceLinked(
+                        context = context,
+                        deviceId = deviceId,
+                        email = email,
+                        role = "RECEPCION",
+                        userName = deviceName
+                    )
+                    DevicePreferences.setDeviceAuthorized(context, true)
+                    DevicePreferences.setLastActiveScreen(context, Screen.RECEPCION.name)
+
                     _pinValidationResult.value = PinValidationResult.Valid
-                    _userMessage.value = "Código QR validado exitosamente en Firebase."
+                    _userMessage.value = "Código QR validado y dispositivo vinculado exitosamente en Firebase."
                 }
             } catch (e: Exception) {
                 Log.w("DeviceLinkingVM", "Validación QR Firebase: ${e.message}")

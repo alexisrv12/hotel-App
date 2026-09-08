@@ -94,16 +94,8 @@ class HotelFirestoreRepository(
 
     private fun initializeFirebase() {
         try {
-            if (FirebaseApp.getApps(context).isEmpty()) {
-                val options = FirebaseOptions.Builder()
-                    .setApplicationId(context.packageName)
-                    .setProjectId("hotel-rivera-cloud")
-                    .setApiKey("AIzaSyHotelRiveraDefaultKeyPlaceholder")
-                    .build()
-                FirebaseApp.initializeApp(context, options)
-            }
-
-            val db = FirebaseFirestore.getInstance()
+            val db = com.example.utils.FirebaseManager.getFirestore(context)
+            com.example.utils.FirebaseManager.ensureAuth()
             val settings = FirebaseFirestoreSettings.Builder()
                 .setLocalCacheSettings(
                     PersistentCacheSettings.newBuilder()

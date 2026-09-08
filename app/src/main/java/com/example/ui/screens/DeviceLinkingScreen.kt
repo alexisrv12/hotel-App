@@ -207,8 +207,9 @@ fun DeviceLinkingScreen(
     LaunchedEffect(estadoVinculacion) {
         estadoVinculacion?.let { msg ->
             snackbarHostState.showSnackbar(msg)
-            if (msg == "Vinculación Exitosa") {
+            if (msg.contains("Exitosa", ignoreCase = true)) {
                 Toast.makeText(context, "¡Vinculación Exitosa!", Toast.LENGTH_SHORT).show()
+                hotelViewModel.onDeviceLinkedSuccessfully(role = "RECEPCION")
             }
         }
     }

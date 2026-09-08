@@ -41,8 +41,14 @@ import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import com.example.utils.DevicePreferences
+import com.example.utils.DiagnosticReport
+import com.example.utils.FirebaseManager
 import com.example.utils.HotelNotificationHelper
 import com.example.utils.SecurityUtils
+import android.net.ConnectivityManager
+import android.net.Network
+import android.net.NetworkCapabilities
+import android.net.NetworkRequest
 import kotlinx.coroutines.Dispatchers
 import com.google.firebase.Firebase
 import com.google.firebase.FirebaseApp
@@ -126,7 +132,6 @@ class HotelViewModel(application: Application) : AndroidViewModel(application) {
     val habitaciones: StateFlow<List<Habitacion>> = _habitaciones.asStateFlow()
     private val _firestoreRooms = MutableStateFlow<List<Room>>(emptyList())
     val firestoreRooms: StateFlow<List<Room>> = _firestoreRooms.asStateFlow()
-    private var habitacionesListener: ListenerRegistration? = null
 
     // Live Clock for Room Timers
     private val _currentTimeMillis = MutableStateFlow(System.currentTimeMillis())
@@ -170,27 +175,28 @@ class HotelViewModel(application: Application) : AndroidViewModel(application) {
 
     // Cloud Firestore instance with offline persistent cache and initialization safety
     val firestore: FirebaseFirestore
-        get() {
-            ensureFirebaseInitialized()
-            return Firebase.firestore
-        }
+        get() = FirebaseManager.getFirestore(getApplication())
+
+    private var habitacionesListener: ListenerRegistration? = null
+    private var ventasListener: ListenerRegistration? = null
+    private var historialListener: ListenerRegistration? = null
+    private var insumosListener: ListenerRegistration? = null
+    private var productosListener: ListenerRegistration? = null
+    private var usuariosListener: ListenerRegistration? = null
+    private var networkCallback: ConnectivityManager.NetworkCallback? = null
+
+    private val _diagnosticReport = MutableStateFlow<DiagnosticReport?>(null)
+    val diagnosticReport: StateFlow<DiagnosticReport?> = _diagnosticReport.asStateFlow()
+
+    private val _isCloudConnected = MutableStateFlow(false)
+    val isCloudConnected: StateFlow<Boolean> = _isCloudConnected.asStateFlow()
 
     private fun ensureFirebaseInitialized() {
         try {
-            if (FirebaseApp.getApps(getApplication()).isEmpty()) {
-                val app = FirebaseApp.initializeApp(getApplication())
-                if (app == null) {
-                    val options = FirebaseOptions.Builder()
-                        .setApplicationId("com.aistudio.hotelrivera.app")
-                        .setProjectId("manager-hotel-r")
-                        .setApiKey("AIzaSyAl18319cmBD2io7hCs9vlP1o9jXgM0PVQ")
-                        .setStorageBucket("manager-hotel-r.firebasestorage.app")
-                        .build()
-                    FirebaseApp.initializeApp(getApplication(), options)
-                }
-            }
+            FirebaseManager.getFirestore(getApplication())
+            FirebaseManager.ensureAuth()
         } catch (e: Exception) {
-            Log.w("HotelViewModel", "FirebaseApp init check: ${e.message}")
+            Log.w("HotelViewModel", "FirebaseManager ensure check: ${e.message}")
         }
     }
 
@@ -281,18 +287,72 @@ class HotelViewModel(application: Application) : AndroidViewModel(application) {
         startLiveClock()
         monitorRoomTimers()
         ensureDefaultUsers()
+        iniciarSincronizacionesFirestore()
+        setupNetworkMonitoring()
+        runConnectivityDiagnostics()
+    }
+
+    /**
+     * Inicia la sincronización en tiempo real de todas las colecciones principales de Cloud Firestore.
+     */
+    fun iniciarSincronizacionesFirestore() {
         iniciarSincronizacionHabitaciones()
+        iniciarSincronizacionVentas()
+        iniciarSincronizacionHistorial()
+        iniciarSincronizacionInsumos()
+        iniciarSincronizacionProductos()
+        iniciarSincronizacionUsuarios()
+    }
+
+    private fun setupNetworkMonitoring() {
+        try {
+            val cm = getApplication<Application>().getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager ?: return
+            val request = NetworkRequest.Builder()
+                .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+                .build()
+            networkCallback = object : ConnectivityManager.NetworkCallback() {
+                override fun onAvailable(network: Network) {
+                    _isCloudConnected.value = true
+                    FirebaseManager.enableNetwork(getApplication())
+                    Log.i("HotelViewModel", "Conectividad restablecida: sincronizando con Firebase Firestore")
+                }
+
+                override fun onLost(network: Network) {
+                    _isCloudConnected.value = false
+                    Log.w("HotelViewModel", "Sin conexión de red: operando en modo local seguro")
+                }
+            }
+            cm.registerNetworkCallback(request, networkCallback!!)
+        } catch (e: Exception) {
+            Log.w("HotelViewModel", "Aviso registrando monitor de red: ${e.message}")
+        }
+    }
+
+    /**
+     * Ejecuta una comprobación de diagnóstico de la conexión con Firebase / Firestore.
+     */
+    fun runConnectivityDiagnostics() {
+        viewModelScope.launch {
+            try {
+                val report = FirebaseManager.runDiagnostics(getApplication())
+                _diagnosticReport.value = report
+                _isCloudConnected.value = report.isFirestoreConnected
+                Log.i("HotelViewModel", "Diagnóstico Firebase: Conectado=${report.isFirestoreConnected}, Latencia=${report.latencyMs}ms")
+            } catch (e: Exception) {
+                Log.w("HotelViewModel", "Aviso en diagnóstico: ${e.message}")
+            }
+        }
     }
 
     /**
      * Escucha cambios en tiempo real en la colección 'habitaciones' de Cloud Firestore
-     * y actualiza el flujo de estado _habitaciones.
+     * y actualiza el flujo de estado _habitaciones y la base de datos Room local.
      */
     fun iniciarSincronizacionHabitaciones() {
         try {
             ensureFirebaseInitialized()
             habitacionesListener?.remove()
-            habitacionesListener = Firebase.firestore.collection("habitaciones")
+            habitacionesListener = Firebase.firestore.collection(FirebaseManager.COLLECTION_HABITACIONES)
                 .addSnapshotListener { snapshot, error ->
                     if (error != null) {
                         Log.w("HotelViewModel", "Error al escuchar cambios en habitaciones: ${error.message}")
@@ -348,7 +408,7 @@ class HotelViewModel(application: Application) : AndroidViewModel(application) {
                         _firestoreRooms.value = listaRooms
 
                         // Sincronización bidireccional estable con Room SQLite
-                        if (snapshot.isEmpty) {
+                        if (snapshot.isEmpty && !snapshot.metadata.isFromCache) {
                             viewModelScope.launch(Dispatchers.IO) {
                                 val local = repository.allRooms.first()
                                 for (room in local) {
@@ -366,13 +426,13 @@ class HotelViewModel(application: Application) : AndroidViewModel(application) {
                                         "checkOutTimestamp" to room.checkOutTimeMillis,
                                         "notes" to (room.notes ?: "")
                                     )
-                                    Firebase.firestore.collection("habitaciones").document(room.roomNumber)
+                                    Firebase.firestore.collection(FirebaseManager.COLLECTION_HABITACIONES)
+                                        .document(room.roomNumber)
                                         .set(firestoreData, SetOptions.merge())
                                 }
                             }
                         } else {
                             viewModelScope.launch(Dispatchers.IO) {
-                                val remoteRoomNumbers = listaRooms.map { it.roomNumber.ifBlank { it.id }.trim().lowercase() }.toSet()
                                 for (r in listaRooms) {
                                     try {
                                         val num = r.roomNumber.ifBlank { r.id }.trim()
@@ -429,11 +489,14 @@ class HotelViewModel(application: Application) : AndroidViewModel(application) {
                                     }
                                 }
 
-                                // Si alguna habitación fue eliminada en Firestore, reflejar eliminación en SQLite local
-                                val localRooms = repository.allRooms.first()
-                                for (localRoom in localRooms) {
-                                    if (localRoom.roomNumber.trim().lowercase() !in remoteRoomNumbers) {
-                                        repository.deleteRoom(localRoom.id)
+                                for (change in snapshot.documentChanges) {
+                                    if (change.type == com.google.firebase.firestore.DocumentChange.Type.REMOVED) {
+                                        val deletedDocId = change.document.id
+                                        val roomNum = change.document.getString("numero") ?: change.document.getString("roomNumber") ?: deletedDocId
+                                        val existing = repository.getRoomByNumber(roomNum.trim())
+                                        if (existing != null) {
+                                            repository.deleteRoom(existing.id)
+                                        }
                                     }
                                 }
                             }
@@ -442,6 +505,126 @@ class HotelViewModel(application: Application) : AndroidViewModel(application) {
                 }
         } catch (e: Exception) {
             Log.e("HotelViewModel", "Error iniciando sincronización de habitaciones: ${e.message}", e)
+        }
+    }
+
+    /**
+     * Sincroniza en tiempo real los registros de ventas desde Firestore.
+     */
+    fun iniciarSincronizacionVentas() {
+        ventasListener?.remove()
+        ventasListener = FirebaseManager.observeVentas(getApplication()) { remoteSales ->
+            viewModelScope.launch(Dispatchers.IO) {
+                for (sale in remoteSales) {
+                    try {
+                        val existing = repository.getSaleRecordByUnique(sale.timestampMillis, sale.productName)
+                        if (existing == null) {
+                            repository.insertSaleRecordDirect(sale)
+                        }
+                    } catch (e: Exception) {
+                        Log.w("HotelViewModel", "Aviso sincronizando venta remota: ${e.message}")
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * Sincroniza en tiempo real el historial de estancias desde Firestore.
+     */
+    fun iniciarSincronizacionHistorial() {
+        historialListener?.remove()
+        historialListener = FirebaseManager.observeHistorialEstancias(getApplication()) { remoteHistories ->
+            viewModelScope.launch(Dispatchers.IO) {
+                for (history in remoteHistories) {
+                    try {
+                        val existing = repository.getStayHistoryByUnique(
+                            history.roomNumber,
+                            history.checkInTimeMillis,
+                            history.checkOutTimeMillis
+                        )
+                        if (existing == null) {
+                            repository.insertStayHistoryDirect(history)
+                        }
+                    } catch (e: Exception) {
+                        Log.w("HotelViewModel", "Aviso sincronizando estancia remota: ${e.message}")
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * Sincroniza en tiempo real el stock de insumos desde Firestore.
+     */
+    fun iniciarSincronizacionInsumos() {
+        insumosListener?.remove()
+        insumosListener = FirebaseManager.observeInsumos(getApplication()) { remoteSupplies ->
+            viewModelScope.launch(Dispatchers.IO) {
+                try {
+                    val localSupplies = repository.allSupplies.first()
+                    for (remote in remoteSupplies) {
+                        val local = localSupplies.find { it.name.equals(remote.name, ignoreCase = true) }
+                        if (local != null) {
+                            if (local.stockCurrent != remote.stockCurrent || local.stockMinimum != remote.stockMinimum) {
+                                repository.updateSupplyDirect(
+                                    local.copy(
+                                        stockCurrent = remote.stockCurrent,
+                                        stockMinimum = remote.stockMinimum
+                                    )
+                                )
+                            }
+                        } else {
+                            repository.insertSupplyDirect(remote)
+                        }
+                    }
+                } catch (e: Exception) {
+                    Log.w("HotelViewModel", "Aviso sincronizando insumos remotos: ${e.message}")
+                }
+            }
+        }
+    }
+
+    /**
+     * Sincroniza en tiempo real el catálogo de productos desde Firestore.
+     */
+    fun iniciarSincronizacionProductos() {
+        productosListener?.remove()
+        productosListener = FirebaseManager.observeProductos(getApplication()) { remoteProducts ->
+            viewModelScope.launch(Dispatchers.IO) {
+                try {
+                    val localProducts = repository.allProducts.first()
+                    for (remote in remoteProducts) {
+                        val local = localProducts.find { it.name.equals(remote.name, ignoreCase = true) }
+                        if (local == null) {
+                            repository.insertProductDirect(remote)
+                        }
+                    }
+                } catch (e: Exception) {
+                    Log.w("HotelViewModel", "Aviso sincronizando productos remotos: ${e.message}")
+                }
+            }
+        }
+    }
+
+    /**
+     * Sincroniza en tiempo real la lista de usuarios autorizados desde Firestore.
+     */
+    fun iniciarSincronizacionUsuarios() {
+        usuariosListener?.remove()
+        usuariosListener = FirebaseManager.observeUsuarios(getApplication()) { remoteUsers ->
+            viewModelScope.launch(Dispatchers.IO) {
+                try {
+                    for (remote in remoteUsers) {
+                        val local = repository.getUserByUsername(remote.username)
+                        if (local == null) {
+                            repository.insertUserDirect(remote)
+                        }
+                    }
+                } catch (e: Exception) {
+                    Log.w("HotelViewModel", "Aviso sincronizando usuarios remotos: ${e.message}")
+                }
+            }
         }
     }
 
@@ -465,7 +648,7 @@ class HotelViewModel(application: Application) : AndroidViewModel(application) {
                 firestoreData["checkInTimestamp"] = 0L
                 firestoreData["checkOutTimestamp"] = 0L
             }
-            Firebase.firestore.collection("habitaciones").document(idHabitacion)
+            Firebase.firestore.collection(FirebaseManager.COLLECTION_HABITACIONES).document(idHabitacion)
                 .set(firestoreData, SetOptions.merge())
                 .addOnSuccessListener {
                     Log.i("HotelViewModel", "Estado de habitación $idHabitacion actualizado a $nuevoEstado en Firestore")
@@ -481,6 +664,17 @@ class HotelViewModel(application: Application) : AndroidViewModel(application) {
     override fun onCleared() {
         super.onCleared()
         habitacionesListener?.remove()
+        ventasListener?.remove()
+        historialListener?.remove()
+        insumosListener?.remove()
+        productosListener?.remove()
+        usuariosListener?.remove()
+        try {
+            val cm = getApplication<Application>().getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+            networkCallback?.let { cm?.unregisterNetworkCallback(it) }
+        } catch (e: Exception) {
+            // ignore
+        }
     }
 
     private fun ensureDefaultUsers() {
@@ -916,13 +1110,25 @@ class HotelViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             val room = rooms.value.find { it.id == roomId }
             val roomNum = room?.roomNumber ?: roomId.toString()
-            repository.finishStay(
+            val historyId = repository.finishStay(
                 roomId = roomId,
                 paymentMethod = paymentMethod,
                 receptionistName = _activeUser.value,
                 finalPrice = finalPrice,
                 extraNotes = notes
             )
+
+            // Guardar en Firestore el historial de estancia para sincronización multidispositivo
+            if (historyId != null) {
+                try {
+                    val historyEntry = repository.getStayHistoryById(historyId)
+                    if (historyEntry != null) {
+                        FirebaseManager.saveHistorialEstanciaInFirestore(getApplication(), historyEntry)
+                    }
+                } catch (e: Exception) {
+                    Log.w("HotelViewModel", "Aviso sincronizando historial a Firestore: ${e.message}")
+                }
+            }
 
             // Sincronizar salida y cambio a limpieza con Firestore en tiempo real
             try {
@@ -938,10 +1144,20 @@ class HotelViewModel(application: Application) : AndroidViewModel(application) {
                     "checkOutTimestamp" to 0L,
                     "notes" to (notes ?: "")
                 )
-                Firebase.firestore.collection("habitaciones").document(roomNum)
+                Firebase.firestore.collection(FirebaseManager.COLLECTION_HABITACIONES).document(roomNum)
                     .set(firestoreData, SetOptions.merge())
             } catch (e: Exception) {
                 Log.w("HotelViewModel", "Aviso sincronizando check-out a Firestore: ${e.message}")
+            }
+
+            // Sincronizar insumos actualizados a Firestore tras la deducción automática
+            try {
+                val currentSupplies = repository.allSupplies.first()
+                for (supply in currentSupplies) {
+                    FirebaseManager.saveInsumoInFirestore(getApplication(), supply)
+                }
+            } catch (e: Exception) {
+                Log.w("HotelViewModel", "Aviso sincronizando insumos tras salida: ${e.message}")
             }
 
             HotelNotificationHelper.sendGuestCheckOutAlert(
@@ -1348,13 +1564,26 @@ class HotelViewModel(application: Application) : AndroidViewModel(application) {
     fun saveSupply(supply: SupplyEntity) {
         viewModelScope.launch {
             repository.saveSupply(supply)
+            try {
+                FirebaseManager.saveInsumoInFirestore(getApplication(), supply)
+            } catch (e: Exception) {
+                Log.w("HotelViewModel", "Aviso guardando insumo en Firestore: ${e.message}")
+            }
             _userMessage.value = "Insumo guardado."
         }
     }
 
     fun deleteSupply(id: Long) {
         viewModelScope.launch {
+            val supply = supplies.value.find { it.id == id }
             repository.deleteSupply(id)
+            if (supply != null) {
+                try {
+                    FirebaseManager.deleteInsumoInFirestore(getApplication(), supply.name)
+                } catch (e: Exception) {
+                    Log.w("HotelViewModel", "Aviso eliminando insumo en Firestore: ${e.message}")
+                }
+            }
             _userMessage.value = "Insumo eliminado."
         }
     }
@@ -1362,20 +1591,40 @@ class HotelViewModel(application: Application) : AndroidViewModel(application) {
     fun saveProduct(product: ProductEntity) {
         viewModelScope.launch {
             repository.saveProduct(product)
+            try {
+                FirebaseManager.saveProductoInFirestore(getApplication(), product)
+            } catch (e: Exception) {
+                Log.w("HotelViewModel", "Aviso guardando producto en Firestore: ${e.message}")
+            }
             _userMessage.value = "Producto guardado."
         }
     }
 
     fun deleteProduct(id: Long) {
         viewModelScope.launch {
+            val prod = products.value.find { it.id == id }
             repository.deleteProduct(id)
+            if (prod != null) {
+                try {
+                    FirebaseManager.deleteProductoInFirestore(getApplication(), prod.name)
+                } catch (e: Exception) {
+                    Log.w("HotelViewModel", "Aviso eliminando producto en Firestore: ${e.message}")
+                }
+            }
             _userMessage.value = "Producto eliminado."
         }
     }
 
     fun registerSale(productId: Long, quantity: Int, paymentMethod: String) {
         viewModelScope.launch {
-            repository.registerSale(productId, quantity, _activeUser.value, paymentMethod)
+            val saleRecord = repository.registerSale(productId, quantity, _activeUser.value, paymentMethod)
+            if (saleRecord != null) {
+                try {
+                    FirebaseManager.saveVentaInFirestore(getApplication(), saleRecord)
+                } catch (e: Exception) {
+                    Log.w("HotelViewModel", "Aviso guardando venta en Firestore: ${e.message}")
+                }
+            }
             _userMessage.value = "Venta registrada."
         }
     }
@@ -1383,13 +1632,26 @@ class HotelViewModel(application: Application) : AndroidViewModel(application) {
     fun saveUser(user: UserEntity) {
         viewModelScope.launch {
             repository.saveUser(user)
+            try {
+                FirebaseManager.saveUsuarioInFirestore(getApplication(), user)
+            } catch (e: Exception) {
+                Log.w("HotelViewModel", "Aviso guardando usuario en Firestore: ${e.message}")
+            }
             _userMessage.value = "Usuario guardado."
         }
     }
 
     fun deleteUser(id: Long) {
         viewModelScope.launch {
+            val u = users.value.find { it.id == id }
             repository.deleteUser(id)
+            if (u != null) {
+                try {
+                    FirebaseManager.deleteUsuarioInFirestore(getApplication(), u.username)
+                } catch (e: Exception) {
+                    Log.w("HotelViewModel", "Aviso eliminando usuario en Firestore: ${e.message}")
+                }
+            }
             _userMessage.value = "Usuario eliminado."
         }
     }

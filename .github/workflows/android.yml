@@ -20,8 +20,19 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: Regenerate Gradle Wrapper
-        run: gradle wrapper --gradle-version 9.3.1
+      - name: Verify Firebase Configuration
+        run: |
+          if [ ! -f "app/google-services.json" ]; then
+            echo "ERROR: app/google-services.json is missing!"
+            exit 1
+          fi
+          echo "Firebase google-services.json verified."
+
+      - name: Ensure Environment Configuration
+        run: |
+          if [ ! -f ".env" ]; then
+            cp .env.example .env 2>/dev/null || touch .env
+          fi
 
       - name: Generate Debug Keystore
         run: |

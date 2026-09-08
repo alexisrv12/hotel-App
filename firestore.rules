@@ -1,0 +1,56 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // Función de seguridad: Verifica que la petición provenga de un cliente autenticado
+    // en el proyecto Firebase (manager-hotel-r)
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    // Colección de habitaciones: sincronización en tiempo real entre múltiples terminales
+    match /habitaciones/{habitacionId} {
+      allow read, write: if isAuthenticated();
+    }
+
+    // Colección de vinculaciones: sesiones temporales de emparejamiento con PIN o QR (15 min)
+    match /vinculaciones/{vinculacionId} {
+      allow read, write: if isAuthenticated();
+    }
+
+    // Colección de dispositivos y terminales autorizadas
+    match /dispositivos/{dispositivoId} {
+      allow read, write: if isAuthenticated();
+    }
+
+    // Colección de ventas de productos y consumos de recepción
+    match /ventas/{ventaId} {
+      allow read, write: if isAuthenticated();
+    }
+
+    // Colección de historial de estancias y check-ins completados
+    match /historial_estancias/{estanciaId} {
+      allow read, write: if isAuthenticated();
+    }
+
+    // Colección de catálogo de productos
+    match /productos/{productoId} {
+      allow read, write: if isAuthenticated();
+    }
+
+    // Colección de insumos y consumibles del hotel
+    match /insumos/{insumoId} {
+      allow read, write: if isAuthenticated();
+    }
+
+    // Colección de usuarios del personal
+    match /usuarios/{usuarioId} {
+      allow read, write: if isAuthenticated();
+    }
+
+    // Colección de configuración del hotel y pings de diagnóstico
+    match /configuracion/{configId} {
+      allow read, write: if isAuthenticated();
+    }
+  }
+}

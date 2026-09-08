@@ -254,9 +254,9 @@ class HotelRepository(private val dao: HotelDao) {
 
     suspend fun deleteProduct(id: Long) = dao.deleteProductById(id)
 
-    suspend fun registerSale(productId: Long, quantity: Int, receptionistName: String, paymentMethod: String) {
+    suspend fun registerSale(productId: Long, quantity: Int, receptionistName: String, paymentMethod: String): SaleRecordEntity? {
         val products = dao.getAllProducts().first()
-        val product = products.find { it.id == productId } ?: return
+        val product = products.find { it.id == productId } ?: return null
         val total = product.price * quantity
         val totalCost = product.costPrice * quantity
         val profit = total - totalCost
@@ -271,12 +271,35 @@ class HotelRepository(private val dao: HotelDao) {
             registeredBy = receptionistName,
             paymentMethod = paymentMethod
         )
-        dao.insertSaleRecord(record)
+        val id = dao.insertSaleRecord(record)
 
         // Update product stock
         val newStock = maxOf(0, product.stock - quantity)
         dao.updateProduct(product.copy(stock = newStock))
+        return record.copy(id = id)
     }
+
+    suspend fun getSaleRecordByUnique(timestamp: Long, productName: String): SaleRecordEntity? =
+        dao.getSaleRecordByUnique(timestamp, productName)
+
+    suspend fun getSaleRecordById(id: Long): SaleRecordEntity? = dao.getSaleRecordById(id)
+
+    suspend fun insertSaleRecordDirect(record: SaleRecordEntity): Long = dao.insertSaleRecord(record)
+
+    suspend fun getStayHistoryByUnique(roomNumber: String, checkIn: Long, checkOut: Long): StayHistoryEntity? =
+        dao.getStayHistoryByUnique(roomNumber, checkIn, checkOut)
+
+    suspend fun getStayHistoryById(id: Long): StayHistoryEntity? = dao.getStayHistoryById(id)
+
+    suspend fun insertStayHistoryDirect(history: StayHistoryEntity): Long = dao.insertStayHistory(history)
+
+    suspend fun insertSupplyDirect(supply: SupplyEntity): Long = dao.insertSupply(supply)
+
+    suspend fun updateSupplyDirect(supply: SupplyEntity) = dao.updateSupply(supply)
+
+    suspend fun insertProductDirect(product: ProductEntity): Long = dao.insertProduct(product)
+
+    suspend fun insertUserDirect(user: UserEntity): Long = dao.insertUser(user)
 
     // --- USERS OPERATIONS ---
     suspend fun saveUser(user: UserEntity) {

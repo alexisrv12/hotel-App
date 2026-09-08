@@ -102,6 +102,12 @@ interface HotelDao {
     @Query("SELECT * FROM sale_records ORDER BY timestampMillis DESC")
     fun getAllSaleRecords(): Flow<List<SaleRecordEntity>>
 
+    @Query("SELECT * FROM sale_records WHERE timestampMillis = :timestamp AND productName = :productName LIMIT 1")
+    suspend fun getSaleRecordByUnique(timestamp: Long, productName: String): SaleRecordEntity?
+
+    @Query("SELECT * FROM sale_records WHERE id = :id LIMIT 1")
+    suspend fun getSaleRecordById(id: Long): SaleRecordEntity?
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertSaleRecord(record: SaleRecordEntity): Long
 
@@ -111,6 +117,12 @@ interface HotelDao {
 
     @Query("SELECT * FROM stay_history WHERE dateString = :dateString ORDER BY checkOutTimeMillis DESC")
     fun getStayHistoryByDate(dateString: String): Flow<List<StayHistoryEntity>>
+
+    @Query("SELECT * FROM stay_history WHERE roomNumber = :roomNumber AND checkInTimeMillis = :checkIn AND checkOutTimeMillis = :checkOut LIMIT 1")
+    suspend fun getStayHistoryByUnique(roomNumber: String, checkIn: Long, checkOut: Long): StayHistoryEntity?
+
+    @Query("SELECT * FROM stay_history WHERE id = :id LIMIT 1")
+    suspend fun getStayHistoryById(id: Long): StayHistoryEntity?
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertStayHistory(history: StayHistoryEntity): Long

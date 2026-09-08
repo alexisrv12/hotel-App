@@ -43,8 +43,9 @@ class HotelRiveraApplication : Application() {
 
         try {
             com.example.utils.FirebaseManager.getFirestore(this)
+            com.example.utils.FirebaseManager.ensureAuth()
         } catch (e: Exception) {
-            Log.w("HotelRiveraApp", "Firestore pre-warming: ${e.message}")
+            Log.w("HotelRiveraApp", "Firestore and Auth pre-warming: ${e.message}")
         }
 
         // 2. Crear canales de notificación del sistema

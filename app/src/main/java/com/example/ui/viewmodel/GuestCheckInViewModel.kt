@@ -139,7 +139,8 @@ class GuestCheckInViewModel @JvmOverloads constructor(
     fun iniciarSincronizacionFirestore() {
         try {
             firestoreListener?.remove()
-            firestoreListener = Firebase.firestore.collection("habitaciones")
+            val db = com.example.utils.FirebaseManager.getFirestore(getApplication())
+            firestoreListener = db.collection(com.example.utils.FirebaseManager.COLLECTION_HABITACIONES)
                 .addSnapshotListener { snapshot, error ->
                     if (error != null) {
                         Log.w("GuestCheckInVM", "Error en snapshotListener habitaciones: ${error.message}")
@@ -179,7 +180,6 @@ class GuestCheckInViewModel @JvmOverloads constructor(
                         }
                         _firestoreRooms.value = lista
                         viewModelScope.launch(Dispatchers.IO) {
-                            val remoteRoomNumbers = lista.map { it.roomNumber.ifBlank { it.id }.trim().lowercase() }.toSet()
                             for (r in lista) {
                                 try {
                                     val num = r.roomNumber.ifBlank { r.id }.trim()
@@ -235,10 +235,15 @@ class GuestCheckInViewModel @JvmOverloads constructor(
                                     Log.w("GuestCheckInVM", "Aviso sincronizando habitación a RoomDao: ${ex.message}")
                                 }
                             }
-                            val localRooms = roomDao.getAllRooms().first()
-                            for (localRoom in localRooms) {
-                                if (localRoom.roomNumber.trim().lowercase() !in remoteRoomNumbers) {
-                                    roomDao.deleteRoom(localRoom)
+
+                            for (change in snapshot.documentChanges) {
+                                if (change.type == com.google.firebase.firestore.DocumentChange.Type.REMOVED) {
+                                    val deletedDocId = change.document.id
+                                    val roomNum = change.document.getString("numero") ?: change.document.getString("roomNumber") ?: deletedDocId
+                                    val existing = roomDao.getRoomByNumber(roomNum.trim())
+                                    if (existing != null) {
+                                        roomDao.deleteRoom(existing)
+                                    }
                                 }
                             }
                         }
