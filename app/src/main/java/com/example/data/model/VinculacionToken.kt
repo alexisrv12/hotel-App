@@ -12,6 +12,9 @@ data class VinculacionToken(
     val estado: String = "PENDIENTE",
     val hotelName: String = "Hotel Rivera",
     val rol: String = "RECEPCION",
+    val hostDeviceId: String = "",
+    val hostDeviceName: String = "",
+    val hostId: String = "",
     val dispositivoVinculadoId: String = "",
     val dispositivoVinculadoNombre: String = ""
 )

@@ -1895,7 +1895,11 @@ class HotelViewModel(application: Application) : AndroidViewModel(application) {
         _estadoVinculacion.value = "PIN Generado: $pin (Válido por 15 min)"
     }
 
-    fun onDeviceLinkedSuccessfully(role: String = "RECEPCION") {
+    fun onDeviceLinkedSuccessfully(
+        role: String = "RECEPCION",
+        hostDeviceId: String = "",
+        hostDeviceName: String = "Terminal Principal"
+    ) {
         val upperRole = role.uppercase()
         val userName = if (upperRole == "GERENTE") "Gerencia Hotel Rivera" else "Recepción Terminal Vinculada"
         val targetScreen = if (upperRole == "GERENTE") Screen.GERENTE_DASHBOARD else Screen.RECEPCION
@@ -1906,6 +1910,7 @@ class HotelViewModel(application: Application) : AndroidViewModel(application) {
         val deviceId = DevicePreferences.getLinkedDeviceId(getApplication())
         val email = "${upperRole.lowercase()}@hotelrivera.com"
 
+        DevicePreferences.setLinkedHostId(getApplication(), hostDeviceId, hostDeviceName)
         DevicePreferences.setDeviceLinked(
             context = getApplication(),
             deviceId = deviceId,
@@ -1943,11 +1948,16 @@ class HotelViewModel(application: Application) : AndroidViewModel(application) {
 
         viewModelScope.launch {
             try {
+                val hostDeviceId = com.example.utils.DevicePreferences.getLinkedDeviceId(getApplication())
+                val hostDeviceName = com.example.utils.DevicePreferences.getLinkedUserName(getApplication())
                 val tokenResult = com.example.utils.FirebaseManager.createVinculacionSession(
                     context = getApplication(),
                     pin = nuevoPin,
                     qrToken = nuevoQrToken,
-                    role = "RECEPCION"
+                    role = "RECEPCION",
+                    durationMinutes = 15,
+                    hostDeviceId = hostDeviceId,
+                    hostDeviceName = hostDeviceName
                 )
                 val token = tokenResult.getOrNull()
                 if (token != null) {
@@ -1984,8 +1994,10 @@ class HotelViewModel(application: Application) : AndroidViewModel(application) {
                 if (result.isSuccess) {
                     val token = result.getOrNull()
                     val assignedRole = token?.rol ?: "RECEPCION"
-                    _estadoVinculacion.value = "¡Vinculación Exitosa!"
-                    onDeviceLinkedSuccessfully(assignedRole)
+                    val hostDeviceId = token?.hostDeviceId ?: ""
+                    val hostDeviceName = token?.hostDeviceName ?: "Terminal Principal"
+                    _estadoVinculacion.value = "¡Vinculación Exitosa con Host $hostDeviceName!"
+                    onDeviceLinkedSuccessfully(assignedRole, hostDeviceId, hostDeviceName)
                     onVinculado?.invoke()
                 } else {
                     val errorMsg = result.exceptionOrNull()?.message ?: "PIN o Token inválido, inactivo o expirado"

@@ -23,6 +23,16 @@ service cloud.firestore {
       allow read, write: if isAuthenticated();
     }
 
+    // Colección global de devices (en inglés para compatibilidad estándar)
+    match /devices/{deviceId} {
+      allow read, write: if isAuthenticated();
+    }
+
+    // Colección de hoteles y subcolecciones (linking_codes, devices, etc.)
+    match /hotels/{hotelId}/{document=**} {
+      allow read, write: if isAuthenticated();
+    }
+
     // Colección de ventas de productos y consumos de recepción
     match /ventas/{ventaId} {
       allow read, write: if isAuthenticated();

@@ -139,12 +139,18 @@ class LinkingViewModel(application: Application) : AndroidViewModel(application)
         _activeManagerPin.value = newPin
         _pinTimestamp.value = now
         viewModelScope.launch {
+            val context = getApplication<Application>()
+            val hostDeviceId = DevicePreferences.getLinkedDeviceId(context)
+            val hostDeviceName = DevicePreferences.getLinkedUserName(context)
             sessionRepo.saveActiveLinkingPin(newPin, now)
             FirebaseManager.createVinculacionSession(
-                context = getApplication(),
+                context = context,
                 pin = newPin,
                 qrToken = _activeManagerQr.value,
-                role = "RECEPCION"
+                role = "RECEPCION",
+                durationMinutes = 15,
+                hostDeviceId = hostDeviceId,
+                hostDeviceName = hostDeviceName
             )
         }
     }
@@ -155,32 +161,39 @@ class LinkingViewModel(application: Application) : AndroidViewModel(application)
         _activeManagerQr.value = newQr
         _qrTimestamp.value = now
         viewModelScope.launch {
+            val context = getApplication<Application>()
+            val hostDeviceId = DevicePreferences.getLinkedDeviceId(context)
+            val hostDeviceName = DevicePreferences.getLinkedUserName(context)
             sessionRepo.saveActiveLinkingQr(newQr, now)
             FirebaseManager.createVinculacionSession(
-                context = getApplication(),
+                context = context,
                 pin = _activeManagerPin.value,
                 qrToken = newQr,
-                role = "RECEPCION"
+                role = "RECEPCION",
+                durationMinutes = 15,
+                hostDeviceId = hostDeviceId,
+                hostDeviceName = hostDeviceName
             )
         }
     }
 
     /**
      * Links a device using the entered PIN validating against Firebase Firestore in the cloud.
+     * Regla: Forzar lectura del servidor (Source.SERVER) y vincular con el hostDeviceId remoto.
      */
     fun linkWithPin(context: Context, deviceName: String = "Terminal Móvil") {
         val enteredPin = _pinInput.value.trim()
-        if (enteredPin.length != 6) {
+        if (enteredPin.length != 6 || !enteredPin.all { it.isDigit() }) {
             _uiState.value = LinkingUiState.Error("El PIN debe contener exactamente 6 dígitos numéricos.")
             return
         }
 
         val deviceId = DevicePreferences.getLinkedDeviceId(context)
-        _uiState.value = LinkingUiState.Validating("Verificando PIN en Firebase...")
+        _uiState.value = LinkingUiState.Validating("Verificando PIN en el servidor Firebase...")
 
         viewModelScope.launch {
             try {
-                // 1. Validar contra la base en la nube de Firebase Firestore
+                // 1. Validar contra la base en la nube de Firebase Firestore (Source.SERVER)
                 val cloudValidationResult = FirebaseManager.validatePinOrQr(
                     context = context,
                     input = enteredPin,
@@ -188,24 +201,18 @@ class LinkingViewModel(application: Application) : AndroidViewModel(application)
                     deviceName = deviceName
                 )
 
-                val now = System.currentTimeMillis()
-                val isLocalPinMatch = (enteredPin == _activeManagerPin.value && (now - _pinTimestamp.value <= 15 * 60 * 1000L))
-
                 if (cloudValidationResult.isSuccess) {
                     val token = cloudValidationResult.getOrNull()
                     val role = token?.rol?.ifBlank { "RECEPCION" } ?: "RECEPCION"
+                    val hostDeviceId = token?.hostDeviceId ?: ""
+                    val hostDeviceName = token?.hostDeviceName ?: "Terminal Principal"
                     executeLinkingProcess(
                         context = context,
                         role = role,
                         token = token?.pin ?: enteredPin,
-                        deviceName = deviceName
-                    )
-                } else if (isLocalPinMatch) {
-                    executeLinkingProcess(
-                        context = context,
-                        role = "RECEPCION",
-                        token = enteredPin,
-                        deviceName = deviceName
+                        deviceName = deviceName,
+                        hostDeviceId = hostDeviceId,
+                        hostDeviceName = hostDeviceName
                     )
                 } else {
                     val errorReason = cloudValidationResult.exceptionOrNull()?.message
@@ -257,26 +264,18 @@ class LinkingViewModel(application: Application) : AndroidViewModel(application)
                     )
                 }
 
-                val now = System.currentTimeMillis()
-                val isLocalMatch = scannedData.token == _activeManagerQr.value ||
-                        scannedData.rawContent.contains(_activeManagerQr.value) ||
-                        scannedData.token.startsWith("RIVERA-LINK-")
-
                 if (cloudResult.isSuccess) {
                     val token = cloudResult.getOrNull()
                     val role = token?.rol?.ifBlank { scannedData.role.ifBlank { "RECEPCION" } } ?: "RECEPCION"
+                    val hostDeviceId = token?.hostDeviceId ?: ""
+                    val hostDeviceName = token?.hostDeviceName ?: "Terminal Principal"
                     executeLinkingProcess(
                         context = context,
                         role = role,
                         token = token?.qrToken ?: scannedData.token,
-                        deviceName = scannedData.deviceName ?: deviceName
-                    )
-                } else if (isLocalMatch) {
-                    executeLinkingProcess(
-                        context = context,
-                        role = scannedData.role.ifBlank { "RECEPCION" },
-                        token = scannedData.token,
-                        deviceName = scannedData.deviceName ?: deviceName
+                        deviceName = scannedData.deviceName ?: deviceName,
+                        hostDeviceId = hostDeviceId,
+                        hostDeviceName = hostDeviceName
                     )
                 } else {
                     val errorReason = cloudResult.exceptionOrNull()?.message
@@ -298,7 +297,9 @@ class LinkingViewModel(application: Application) : AndroidViewModel(application)
         context: Context,
         role: String,
         token: String,
-        deviceName: String
+        deviceName: String,
+        hostDeviceId: String = "",
+        hostDeviceName: String = "Terminal Principal"
     ) {
         viewModelScope.launch {
             _uiState.value = LinkingUiState.Validating("Verificando token criptográfico con Estación Central...")
@@ -361,6 +362,11 @@ class LinkingViewModel(application: Application) : AndroidViewModel(application)
 
             _uiState.value = LinkingUiState.Syncing(0.9f, "Guardando credenciales locales seguras...")
 
+            // Guardar vinculación hacia el host remoto
+            if (hostDeviceId.isNotBlank()) {
+                DevicePreferences.setLinkedHostId(context, hostDeviceId, hostDeviceName)
+            }
+
             // Save in DataStore and Room
             sessionRepo.saveDeviceAuthorization(
                 deviceId = deviceId,
@@ -394,7 +400,7 @@ class LinkingViewModel(application: Application) : AndroidViewModel(application)
             // Sync with Legacy DataStore and SharedPreferences
             DeviceDataStoreManager(context).saveDeviceAuthorization(deviceId, email)
 
-            // Register in Room database
+            // Register in Room database with host binding
             val deviceEntity = DeviceEntity(
                 name = deviceName,
                 userAssigned = email,
@@ -402,7 +408,10 @@ class LinkingViewModel(application: Application) : AndroidViewModel(application)
                 connectionStatus = DeviceConnectionStatus.CONNECTED,
                 realTimeConnectivityStatus = RealTimeConnectivityStatus.ACTIVE,
                 lastHeartbeat = System.currentTimeMillis(),
-                timestamp = System.currentTimeMillis()
+                timestamp = System.currentTimeMillis(),
+                linkedTo = hostDeviceId,
+                hostId = hostDeviceId,
+                hostDeviceName = hostDeviceName
             )
             deviceRepo.insertDevice(deviceEntity)
 

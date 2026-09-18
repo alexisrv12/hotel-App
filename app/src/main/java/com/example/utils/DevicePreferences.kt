@@ -15,6 +15,8 @@ object DevicePreferences {
     private const val KEY_LINKED_TIMESTAMP = "linked_timestamp"
     private const val KEY_LINKED_ROLE = "linked_role"
     private const val KEY_LINKED_USER_NAME = "linked_user_name"
+    private const val KEY_LINKED_HOST_ID = "linked_host_id"
+    private const val KEY_LINKED_HOST_NAME = "linked_host_name"
     private const val KEY_LAST_SCREEN = "last_active_screen"
 
     private fun getPrefs(context: Context): SharedPreferences {
@@ -108,6 +110,31 @@ object DevicePreferences {
     }
 
     /**
+     * Retrieves the host device ID (terminal principal / gerente) to which this terminal is linked.
+     */
+    fun getLinkedHostId(context: Context): String? {
+        return getPrefs(context).getString(KEY_LINKED_HOST_ID, null)
+    }
+
+    /**
+     * Retrieves the host device display name.
+     */
+    fun getLinkedHostName(context: Context): String? {
+        return getPrefs(context).getString(KEY_LINKED_HOST_NAME, null)
+    }
+
+    /**
+     * Saves the host device ID and name that this terminal is connected to.
+     */
+    fun setLinkedHostId(context: Context, hostId: String, hostName: String? = null) {
+        val editor = getPrefs(context).edit().putString(KEY_LINKED_HOST_ID, hostId)
+        if (hostName != null) {
+            editor.putString(KEY_LINKED_HOST_NAME, hostName)
+        }
+        editor.apply()
+    }
+
+    /**
      * Clears device authorization state only when explicitly unlinked by Manager.
      */
     fun clearDeviceLinked(context: Context) {
@@ -116,6 +143,8 @@ object DevicePreferences {
             .remove(KEY_LINKED_EMAIL)
             .remove(KEY_LINKED_ROLE)
             .remove(KEY_LINKED_USER_NAME)
+            .remove(KEY_LINKED_HOST_ID)
+            .remove(KEY_LINKED_HOST_NAME)
             .remove(KEY_LAST_SCREEN)
             .remove(KEY_LINKED_TIMESTAMP)
             .apply()

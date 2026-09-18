@@ -25,7 +25,10 @@ data class DeviceEntity(
     val connectionStatus: String = DeviceConnectionStatus.CONNECTED,
     val realTimeConnectivityStatus: String = RealTimeConnectivityStatus.ACTIVE,
     val lastHeartbeat: Long = System.currentTimeMillis(),
-    val ipAddress: String? = null
+    val ipAddress: String? = null,
+    val linkedTo: String? = null,
+    val hostId: String? = null,
+    val hostDeviceName: String? = null
 ) {
     /**
      * Checks if device is currently active based on a heartbeat timeout (default 30 seconds).

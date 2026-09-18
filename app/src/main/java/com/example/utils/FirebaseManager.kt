@@ -22,6 +22,7 @@ import com.google.firebase.auth.FirebaseUser
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.ListenerRegistration
 import com.google.firebase.firestore.SetOptions
+import com.google.firebase.firestore.Source
 import com.google.firebase.firestore.firestore
 import com.google.firebase.firestore.firestoreSettings
 import com.google.firebase.firestore.persistentCacheSettings
@@ -258,13 +259,16 @@ object FirebaseManager {
 
     /**
      * Crea o actualiza una sesión de vinculación en Firestore accesible por todos los dispositivos.
+     * Registra al dispositivo actual como HOST / Gerente en la colección global 'devices'.
      */
     suspend fun createVinculacionSession(
         context: Context,
         pin: String,
         qrToken: String,
         role: String = "RECEPCION",
-        durationMinutes: Long = 15
+        durationMinutes: Long = 15,
+        hostDeviceId: String = "",
+        hostDeviceName: String = ""
     ): Result<VinculacionToken> {
         return try {
             val db = getFirestore(context)
@@ -275,6 +279,9 @@ object FirebaseManager {
             val now = System.currentTimeMillis()
             val expiresAt = now + (durationMinutes * 60 * 1000L)
 
+            val effectiveHostDeviceId = if (hostDeviceId.isNotBlank()) hostDeviceId else DevicePreferences.getLinkedDeviceId(context)
+            val effectiveHostDeviceName = if (hostDeviceName.isNotBlank()) hostDeviceName else DevicePreferences.getLinkedUserName(context)
+
             val tokenObj = VinculacionToken(
                 id = pin,
                 pin = pin,
@@ -284,7 +291,10 @@ object FirebaseManager {
                 activo = true,
                 estado = "PENDIENTE",
                 hotelName = "Hotel Rivera",
-                rol = role
+                rol = role,
+                hostDeviceId = effectiveHostDeviceId,
+                hostDeviceName = effectiveHostDeviceName,
+                hostId = effectiveHostDeviceId
             )
 
             // Guardar con ID = PIN para búsqueda directa e instantánea
@@ -295,7 +305,30 @@ object FirebaseManager {
                 db.collection(COLLECTION_VINCULACIONES).document(qrToken).set(tokenObj).await()
             }
 
-            Log.i(TAG, "Sesión de vinculación creada en Firestore con PIN: $pin")
+            // Registrar y exponer el Host con su PIN activo en la colección global 'devices' y 'dispositivos'
+            val hostData = mapOf(
+                "deviceId" to effectiveHostDeviceId,
+                "name" to effectiveHostDeviceName,
+                "pin" to pin,
+                "activePin" to pin,
+                "pinExpiresAt" to expiresAt,
+                "isHost" to true,
+                "role" to "GERENTE",
+                "userAssigned" to "gerente@hotelrivera.com",
+                "connectionStatus" to DeviceConnectionStatus.CONNECTED,
+                "realTimeConnectivityStatus" to RealTimeConnectivityStatus.ACTIVE,
+                "isAuthorized" to true,
+                "lastHeartbeat" to now,
+                "timestamp" to now
+            )
+            try {
+                db.collection("devices").document(effectiveHostDeviceId).set(hostData, SetOptions.merge()).await()
+                db.collection(COLLECTION_DISPOSITIVOS).document(effectiveHostDeviceId).set(hostData, SetOptions.merge()).await()
+            } catch (hostEx: Exception) {
+                Log.w(TAG, "No se pudo actualizar doc de host en 'devices': ${hostEx.message}")
+            }
+
+            Log.i(TAG, "Sesión de vinculación creada en Firestore con PIN: $pin para Host: $effectiveHostDeviceId ($effectiveHostDeviceName)")
             Result.success(tokenObj)
         } catch (e: Exception) {
             Log.e(TAG, "Error al crear sesión de vinculación en Firestore", e)
@@ -304,7 +337,11 @@ object FirebaseManager {
     }
 
     /**
-     * Valida un PIN o Token QR contra Firebase Firestore para autorizar un dispositivo.
+     * Valida un PIN o Token QR contra Firebase Firestore para autorizar un dispositivo cliente.
+     * 1. Consulta la colección global 'devices' (y 'vinculaciones') donde se registran todos los dispositivos o sesiones.
+     * 2. Fuerza lectura directa del servidor (Source.SERVER) para evitar caché aislada.
+     * 3. Extrae el hostDeviceId del documento remoto y asigna linkedTo/hostId al dispositivo cliente,
+     *    garantizando que nunca se vincule consigo mismo.
      */
     suspend fun validatePinOrQr(
         context: Context,
@@ -323,92 +360,189 @@ object FirebaseManager {
             val trimmed = input.trim()
             val now = System.currentTimeMillis()
 
-            var matchedDoc = try {
-                db.collection(COLLECTION_VINCULACIONES).document(trimmed).get().await()
-            } catch (docEx: Exception) {
-                if (docEx.message?.contains("offline", ignoreCase = true) == true) {
-                    try {
-                        db.enableNetwork().await()
-                        kotlinx.coroutines.delay(250)
-                        db.collection(COLLECTION_VINCULACIONES).document(trimmed).get().await()
-                    } catch (_: Exception) {
-                        throw docEx
+            var matchedDoc: com.google.firebase.firestore.DocumentSnapshot? = null
+            var isFromDeviceCollection = false
+
+            // 1. REGLA: Forzar lectura del servidor (Source.SERVER) y buscar en la colección GLOBAL 'devices'
+            try {
+                val queryDevicesPin = db.collection("devices")
+                    .whereEqualTo("pin", trimmed)
+                    .get(Source.SERVER)
+                    .await()
+                matchedDoc = queryDevicesPin.documents.firstOrNull()
+                if (matchedDoc != null && matchedDoc.exists()) {
+                    isFromDeviceCollection = true
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "Consulta Source.SERVER en 'devices' (pin): ${e.message}")
+            }
+
+            // Si no se encontró, buscar en 'devices' por el campo 'activePin'
+            if (matchedDoc == null || !matchedDoc.exists()) {
+                try {
+                    val queryActivePin = db.collection("devices")
+                        .whereEqualTo("activePin", trimmed)
+                        .get(Source.SERVER)
+                        .await()
+                    matchedDoc = queryActivePin.documents.firstOrNull()
+                    if (matchedDoc != null && matchedDoc.exists()) {
+                        isFromDeviceCollection = true
                     }
-                } else {
-                    throw docEx
+                } catch (_: Exception) {}
+            }
+
+            // Si no se encontró, buscar en la colección global 'dispositivos'
+            if (matchedDoc == null || !matchedDoc.exists()) {
+                try {
+                    val queryDisp = db.collection(COLLECTION_DISPOSITIVOS)
+                        .whereEqualTo("pin", trimmed)
+                        .get(Source.SERVER)
+                        .await()
+                    matchedDoc = queryDisp.documents.firstOrNull()
+                    if (matchedDoc != null && matchedDoc.exists()) {
+                        isFromDeviceCollection = true
+                    }
+                } catch (_: Exception) {}
+            }
+
+            // Si no se encontró, buscar en la colección global 'vinculaciones' directamente por ID del documento
+            if (matchedDoc == null || !matchedDoc.exists()) {
+                try {
+                    val docDirect = db.collection(COLLECTION_VINCULACIONES).document(trimmed).get(Source.SERVER).await()
+                    if (docDirect.exists()) {
+                        matchedDoc = docDirect
+                    }
+                } catch (docEx: Exception) {
+                    Log.w(TAG, "Consulta directa en 'vinculaciones' falló: ${docEx.message}")
                 }
             }
 
-            // Si no se encuentra por document ID, buscar por el campo 'pin'
-            if (!matchedDoc.exists()) {
-                val queryByPin = db.collection(COLLECTION_VINCULACIONES)
-                    .whereEqualTo("pin", trimmed)
-                    .whereEqualTo("activo", true)
-                    .get()
-                    .await()
-                matchedDoc = queryByPin.documents.firstOrNull() ?: matchedDoc
+            // Si no se encuentra por document ID, buscar por el campo 'pin' en 'vinculaciones'
+            if (matchedDoc == null || !matchedDoc.exists()) {
+                try {
+                    val queryByPin = db.collection(COLLECTION_VINCULACIONES)
+                        .whereEqualTo("pin", trimmed)
+                        .get(Source.SERVER)
+                        .await()
+                    matchedDoc = queryByPin.documents.firstOrNull()
+                } catch (_: Exception) {}
             }
 
-            // Si no se encuentra, buscar por el campo 'qrToken'
-            if (!matchedDoc.exists()) {
-                val queryByQr = db.collection(COLLECTION_VINCULACIONES)
-                    .whereEqualTo("qrToken", trimmed)
-                    .whereEqualTo("activo", true)
-                    .get()
-                    .await()
-                matchedDoc = queryByQr.documents.firstOrNull() ?: matchedDoc
+            // Si no se encuentra, buscar por el campo 'qrToken' en 'vinculaciones'
+            if (matchedDoc == null || !matchedDoc.exists()) {
+                try {
+                    val queryByQr = db.collection(COLLECTION_VINCULACIONES)
+                        .whereEqualTo("qrToken", trimmed)
+                        .get(Source.SERVER)
+                        .await()
+                    matchedDoc = queryByQr.documents.firstOrNull()
+                } catch (_: Exception) {}
             }
 
-            // Si el input parece contener un PIN de 6 dígitos dentro de un texto más largo (ej. QR)
-            if (!matchedDoc.exists()) {
+            // Si el input contiene un PIN de 6 dígitos embebido (ej. desde lectura QR compleja)
+            if (matchedDoc == null || !matchedDoc.exists()) {
                 val pinRegex = Regex("\\b\\d{6}\\b")
                 val foundPin = pinRegex.find(trimmed)?.value
                 if (foundPin != null) {
-                    val fallbackDoc = db.collection(COLLECTION_VINCULACIONES).document(foundPin).get().await()
-                    if (fallbackDoc.exists()) {
-                        matchedDoc = fallbackDoc
-                    }
+                    try {
+                        val fallbackDoc = db.collection(COLLECTION_VINCULACIONES).document(foundPin).get(Source.SERVER).await()
+                        if (fallbackDoc.exists()) {
+                            matchedDoc = fallbackDoc
+                        }
+                    } catch (_: Exception) {}
                 }
             }
 
-            if (!matchedDoc.exists()) {
-                return Result.failure(Exception("El PIN o código QR ingresado no existe o no es válido."))
+            if (matchedDoc == null || !matchedDoc.exists()) {
+                return Result.failure(Exception("El PIN o código QR ingresado no existe en el servidor o no es válido."))
             }
 
-            val activo = matchedDoc.getBoolean("activo") ?: false
+            val activo = matchedDoc.getBoolean("activo") ?: (matchedDoc.getString("status")?.uppercase() != "EXPIRED")
             if (!activo) {
                 return Result.failure(Exception("Este código de vinculación ha sido desactivado o revocado."))
             }
 
             val fechaExpiracion = matchedDoc.getLong("fechaExpiracion")
-                ?: (matchedDoc.getLong("fechaCreacion")?.plus(15 * 60 * 1000L) ?: (now + 10000L))
+                ?: matchedDoc.getLong("expiresAtMillis")
+                ?: matchedDoc.getLong("pinExpiresAt")
+                ?: (matchedDoc.getLong("fechaCreacion")?.plus(15 * 60 * 1000L) ?: (now + 60000L))
 
             if (now > fechaExpiracion) {
                 return Result.failure(Exception("El código de vinculación ha expirado. Solicite un nuevo código en Gerencia."))
+            }
+
+            // 3. REGLA: Extraer el ID del documento remoto (hostDeviceId)
+            val rawHostId = matchedDoc.getString("hostDeviceId")
+                ?: matchedDoc.getString("hostId")
+                ?: (if (isFromDeviceCollection) (matchedDoc.getString("deviceId") ?: matchedDoc.id) else "")
+                ?: matchedDoc.id
+
+            val hostDeviceId = if (rawHostId.isNotBlank()) rawHostId else matchedDoc.id
+            val hostDeviceName = matchedDoc.getString("hostDeviceName")
+                ?: (if (isFromDeviceCollection) matchedDoc.getString("name") else null)
+                ?: "Terminal Gerencia"
+
+            // VERIFICACIÓN CRÍTICA: Impedir que un dispositivo se vincule consigo mismo
+            if (hostDeviceId.isNotBlank() && hostDeviceId == deviceId) {
+                return Result.failure(Exception("Error: No puedes vincular este dispositivo consigo mismo. El PIN debe provenir de un dispositivo remoto (Host / Gerente)."))
             }
 
             val assignedRole = matchedDoc.getString("rol") ?: matchedDoc.getString("role") ?: "RECEPCION"
             val effectivePin = matchedDoc.getString("pin") ?: trimmed
             val effectiveQrToken = matchedDoc.getString("qrToken") ?: trimmed
 
-            // Actualizar la vinculación en Firestore marcándola como vinculada con la información del dispositivo
-            matchedDoc.reference.update(
-                mapOf(
-                    "estado" to "VINCULADO",
-                    "dispositivoVinculadoId" to deviceId,
-                    "dispositivoVinculadoNombre" to deviceName,
-                    "fechaVinculacion" to now
-                )
-            ).await()
+            // Actualizar la vinculación en Firestore marcándola como usada por este cliente
+            try {
+                matchedDoc.reference.update(
+                    mapOf(
+                        "estado" to "VINCULADO",
+                        "status" to "USED",
+                        "dispositivoVinculadoId" to deviceId,
+                        "dispositivoVinculadoNombre" to deviceName,
+                        "linkedDeviceId" to deviceId,
+                        "fechaVinculacion" to now,
+                        "usedAtMillis" to now
+                    )
+                ).await()
+            } catch (updEx: Exception) {
+                Log.w(TAG, "No se pudo actualizar estado de la vinculación: ${updEx.message}")
+            }
 
-            // Registrar inmediatamente el nuevo dispositivo en la colección 'dispositivos' de Firestore
+            // Notificar al host remoto del nuevo cliente conectado si está en 'devices'
+            if (hostDeviceId.isNotBlank() && hostDeviceId != deviceId) {
+                try {
+                    db.collection("devices").document(hostDeviceId).update(
+                        mapOf(
+                            "lastLinkedClient" to deviceId,
+                            "lastLinkedClientName" to deviceName,
+                            "lastLinkedTimestamp" to now
+                        )
+                    ).await()
+                } catch (_: Exception) {}
+            }
+
+            // 3. REGLA: Registrar el dispositivo LOCAL apuntando su campo linkedTo y hostId al hostDeviceId remoto
             registerDeviceInFirestore(
                 context = context,
                 deviceId = deviceId,
                 deviceName = deviceName,
                 role = assignedRole,
-                userAssigned = "$assignedRole@hotelrivera.com".lowercase()
+                userAssigned = "$assignedRole@hotelrivera.com".lowercase(),
+                linkedTo = hostDeviceId,
+                hostId = hostDeviceId,
+                hostDeviceName = hostDeviceName
             )
+
+            // Persistir localmente en DevicePreferences
+            DevicePreferences.setLinkedHostId(context, hostDeviceId, hostDeviceName)
+            DevicePreferences.setDeviceLinked(
+                context = context,
+                deviceId = deviceId,
+                email = "$assignedRole@hotelrivera.com".lowercase(),
+                role = assignedRole,
+                userName = deviceName
+            )
+            DevicePreferences.setDeviceAuthorized(context, true)
 
             val tokenResult = VinculacionToken(
                 id = matchedDoc.id,
@@ -417,11 +551,14 @@ object FirebaseManager {
                 activo = true,
                 estado = "VINCULADO",
                 rol = assignedRole,
+                hostDeviceId = hostDeviceId,
+                hostDeviceName = hostDeviceName,
+                hostId = hostDeviceId,
                 dispositivoVinculadoId = deviceId,
                 dispositivoVinculadoNombre = deviceName
             )
 
-            Log.i(TAG, "Dispositivo $deviceName ($deviceId) vinculado exitosamente con rol $assignedRole")
+            Log.i(TAG, "Dispositivo cliente $deviceName ($deviceId) vinculado exitosamente al Host remoto $hostDeviceId ($hostDeviceName)")
             Result.success(tokenResult)
         } catch (e: Exception) {
             Log.e(TAG, "Error validando PIN/QR en Firestore", e)
@@ -446,19 +583,23 @@ object FirebaseManager {
     }
 
     /**
-     * Registra o actualiza un dispositivo en la colección 'dispositivos' de Firestore.
+     * Registra o actualiza un dispositivo en la colección 'devices' y 'dispositivos' de Firestore,
+     * asociándolo con su host remoto si corresponde.
      */
     suspend fun registerDeviceInFirestore(
         context: Context,
         deviceId: String,
         deviceName: String,
         role: String,
-        userAssigned: String
+        userAssigned: String,
+        linkedTo: String? = null,
+        hostId: String? = null,
+        hostDeviceName: String? = null
     ) {
         try {
             val db = getFirestore(context)
             val now = System.currentTimeMillis()
-            val deviceData = mapOf(
+            val deviceData = mutableMapOf<String, Any>(
                 "deviceId" to deviceId,
                 "name" to deviceName,
                 "userAssigned" to userAssigned,
@@ -469,10 +610,24 @@ object FirebaseManager {
                 "lastHeartbeat" to now,
                 "timestamp" to now
             )
+            if (!linkedTo.isNullOrBlank()) {
+                deviceData["linkedTo"] = linkedTo
+            }
+            if (!hostId.isNullOrBlank()) {
+                deviceData["hostId"] = hostId
+            }
+            if (!hostDeviceName.isNullOrBlank()) {
+                deviceData["hostDeviceName"] = hostDeviceName
+            }
+
+            // Registrar tanto en 'devices' como en 'dispositivos' para consistencia global
+            db.collection("devices").document(deviceId)
+                .set(deviceData, SetOptions.merge())
+                .await()
             db.collection(COLLECTION_DISPOSITIVOS).document(deviceId)
                 .set(deviceData, SetOptions.merge())
                 .await()
-            Log.i(TAG, "Dispositivo $deviceId registrado en Firestore")
+            Log.i(TAG, "Dispositivo $deviceId registrado en Firestore con hostId: $hostId y linkedTo: $linkedTo")
         } catch (e: Exception) {
             Log.w(TAG, "Error al registrar dispositivo en Firestore: ${e.message}")
         }

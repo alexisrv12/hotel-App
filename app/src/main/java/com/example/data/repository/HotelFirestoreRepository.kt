@@ -20,6 +20,7 @@ import com.google.firebase.firestore.FirebaseFirestoreSettings
 import com.google.firebase.firestore.ListenerRegistration
 import com.google.firebase.firestore.PersistentCacheSettings
 import com.google.firebase.firestore.SetOptions
+import com.google.firebase.firestore.Source
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -333,7 +334,10 @@ class HotelFirestoreRepository(
         val token = UUID.randomUUID().toString().take(12)
         val currentHotelId = _syncInfo.value.hotelId.ifEmpty { DEFAULT_HOTEL_ID }
         val now = System.currentTimeMillis()
-        val expiresAt = now + (10 * 60 * 1000L) // 10 minutes
+        val expiresAt = now + (15 * 60 * 1000L) // 15 minutes
+
+        val hostDeviceId = com.example.utils.DevicePreferences.getLinkedDeviceId(context)
+        val hostDeviceName = com.example.utils.DevicePreferences.getLinkedUserName(context)
 
         val codeInfo = LinkingCodeInfo(
             pin = pin,
@@ -347,6 +351,17 @@ class HotelFirestoreRepository(
 
         _activeLinkingCode.value = codeInfo
 
+        // Publicar sesión en FirebaseManager (colección global 'vinculaciones' y 'devices')
+        com.example.utils.FirebaseManager.createVinculacionSession(
+            context = context,
+            pin = pin,
+            qrToken = token,
+            role = role.uppercase(),
+            durationMinutes = 15,
+            hostDeviceId = hostDeviceId,
+            hostDeviceName = hostDeviceName
+        )
+
         try {
             getHotelDocRef()?.collection("linking_codes")?.document(token)?.set(
                 mapOf(
@@ -356,7 +371,9 @@ class HotelFirestoreRepository(
                     "role" to role.uppercase(),
                     "createdAtMillis" to now,
                     "expiresAtMillis" to expiresAt,
-                    "status" to "ACTIVE"
+                    "status" to "ACTIVE",
+                    "hostDeviceId" to hostDeviceId,
+                    "hostDeviceName" to hostDeviceName
                 )
             )
         } catch (e: Exception) {
@@ -372,14 +389,18 @@ class HotelFirestoreRepository(
 
     /**
      * Secondary terminal submits a 6-digit PIN to link and authorize itself with Hotel Rivera.
+     * 1. Consulta el PIN en la colección GLOBAL 'devices' y 'vinculaciones'.
+     * 2. Fuerza lectura directa del servidor (Source.SERVER).
+     * 3. Extrae hostDeviceId del documento remoto y lo asigna a linkedTo/hostId del cliente.
+     * 4. Previene vincularse consigo mismo.
      */
     suspend fun linkDeviceByPin(
         pin: String,
         deviceId: String,
         deviceName: String
     ): Result<String> {
-        val hotelDoc = getHotelDocRef()
         val now = System.currentTimeMillis()
+        val trimmedPin = pin.trim()
 
         try {
             // Asegurar conexión activa a la red de Firestore
@@ -389,121 +410,79 @@ class HotelFirestoreRepository(
                 Log.w(TAG, "enableNetwork antes de linkDeviceByPin: ${netEx.message}")
             }
 
-            if (hotelDoc != null) {
-                val query = hotelDoc.collection("linking_codes")
-                    .whereEqualTo("pin", pin.trim())
-                    .whereEqualTo("status", "ACTIVE")
-                    .get()
-                    .await()
+            // Validar contra la colección global 'devices' y 'vinculaciones' usando Source.SERVER
+            val globalResult = com.example.utils.FirebaseManager.validatePinOrQr(
+                context = context,
+                input = trimmedPin,
+                deviceId = deviceId,
+                deviceName = deviceName
+            )
 
-                val validDoc = query.documents.firstOrNull { doc ->
-                    val expiresAt = doc.getLong("expiresAtMillis") ?: 0L
-                    expiresAt > now
-                }
+            if (globalResult.isSuccess) {
+                val tokenData = globalResult.getOrNull()
+                val assignedRole = tokenData?.rol ?: "RECEPCION"
+                val hostDeviceId = tokenData?.hostDeviceId ?: ""
+                val hostDeviceName = tokenData?.hostDeviceName ?: "Terminal Principal"
 
-                if (validDoc != null) {
-                    val assignedRole = validDoc.getString("role") ?: "RECEPCION"
-                    val token = validDoc.id
+                // Registrar en Room el dispositivo cliente apuntando a su host remoto
+                val device = DeviceEntity(
+                    deviceId = deviceId,
+                    name = deviceName,
+                    userAssigned = "$assignedRole@hotelrivera.com".lowercase(),
+                    connectionStatus = DeviceConnectionStatus.CONNECTED,
+                    realTimeConnectivityStatus = RealTimeConnectivityStatus.ACTIVE,
+                    lastHeartbeat = now,
+                    timestamp = now,
+                    linkedTo = hostDeviceId,
+                    hostId = hostDeviceId,
+                    hostDeviceName = hostDeviceName
+                )
+                deviceDao.insertDevice(device)
 
-                    validDoc.reference.update(
-                        mapOf(
-                            "status" to "USED",
-                            "linkedDeviceId" to deviceId,
-                            "usedAtMillis" to now
-                        )
-                    )
-
-                    hotelDoc.collection("devices").document(deviceId).set(
+                // Actualizar en hotelDoc si existe referencia de hotel
+                try {
+                    getHotelDocRef()?.collection("devices")?.document(deviceId)?.set(
                         mapOf(
                             "deviceId" to deviceId,
                             "name" to deviceName,
                             "userAssigned" to assignedRole,
+                            "role" to assignedRole,
+                            "linkedTo" to hostDeviceId,
+                            "hostId" to hostDeviceId,
+                            "hostDeviceName" to hostDeviceName,
                             "connectionStatus" to DeviceConnectionStatus.CONNECTED,
                             "isAuthorized" to true,
                             "lastHeartbeat" to now,
                             "timestamp" to now
-                        )
+                        ),
+                        SetOptions.merge()
                     )
+                } catch (_: Exception) {}
 
-                    sessionRepo.saveDeviceAuthorization(
-                        deviceId = deviceId,
-                        role = assignedRole,
-                        email = "$assignedRole@hotelrivera.com".lowercase(),
-                        token = token
-                    )
-                    sessionRepo.saveSession(
-                        userRole = assignedRole,
-                        userEmail = "$assignedRole@hotelrivera.com".lowercase(),
-                        userName = deviceName,
-                        authToken = token
-                    )
-
-                    return Result.success("Dispositivo vinculado correctamente con rol: $assignedRole")
-                }
-            }
-
-            // Validar también contra la colección global 'vinculaciones' gestionada en la nube por FirebaseManager
-            val globalResult = com.example.utils.FirebaseManager.validatePinOrQr(
-                context = context,
-                input = pin,
-                deviceId = deviceId,
-                deviceName = deviceName
-            )
-            if (globalResult.isSuccess) {
-                val tokenData = globalResult.getOrNull()
-                val assignedRole = tokenData?.rol ?: "RECEPCION"
                 sessionRepo.saveDeviceAuthorization(
                     deviceId = deviceId,
                     role = assignedRole,
                     email = "$assignedRole@hotelrivera.com".lowercase(),
-                    token = tokenData?.id ?: pin
+                    token = tokenData?.id ?: trimmedPin
                 )
                 sessionRepo.saveSession(
                     userRole = assignedRole,
                     userEmail = "$assignedRole@hotelrivera.com".lowercase(),
                     userName = deviceName,
-                    authToken = tokenData?.id ?: pin
+                    authToken = tokenData?.id ?: trimmedPin
                 )
-                return Result.success("Dispositivo vinculado correctamente con rol: $assignedRole")
-            }
 
-            // Fallback para verificación de PIN local activo
-            val (savedPin, expiresAt) = sessionRepo.getActivePin()
-            if (savedPin == pin.trim() && expiresAt > now) {
-                val assignedRole = "RECEPCION"
-                sessionRepo.saveDeviceAuthorization(
-                    deviceId = deviceId,
-                    role = assignedRole,
-                    email = "recepcion@hotelrivera.com",
-                    token = UUID.randomUUID().toString()
-                )
-                return Result.success("Dispositivo vinculado en modo local con rol: $assignedRole")
+                return Result.success("Dispositivo vinculado correctamente con rol: $assignedRole (Host: $hostDeviceName)")
+            } else {
+                val err = globalResult.exceptionOrNull()
+                if (err != null) {
+                    return Result.failure(err)
+                }
             }
 
             return Result.failure(Exception("PIN inválido o expirado. Solicite un nuevo PIN a Gerencia."))
         } catch (e: Exception) {
             Log.e(TAG, "Error linking device by PIN", e)
-            // Si hubo error de red/offline, intentar validar con FirebaseManager con recuperación de red
-            try {
-                val recoveryResult = com.example.utils.FirebaseManager.validatePinOrQr(
-                    context = context,
-                    input = pin,
-                    deviceId = deviceId,
-                    deviceName = deviceName
-                )
-                if (recoveryResult.isSuccess) {
-                    val tokenData = recoveryResult.getOrNull()
-                    val assignedRole = tokenData?.rol ?: "RECEPCION"
-                    sessionRepo.saveDeviceAuthorization(
-                        deviceId = deviceId,
-                        role = assignedRole,
-                        email = "$assignedRole@hotelrivera.com".lowercase(),
-                        token = tokenData?.id ?: pin
-                    )
-                    return Result.success("Dispositivo vinculado correctamente con rol: $assignedRole")
-                }
-            } catch (_: Exception) {}
-
             return Result.failure(Exception("Error al vincular: ${e.localizedMessage}"))
         }
     }
