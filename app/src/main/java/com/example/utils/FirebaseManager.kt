@@ -103,7 +103,30 @@ object FirebaseManager {
                 }
             }
         }
-        return Firebase.firestore
+        val db = Firebase.firestore
+        try {
+            db.enableNetwork()
+        } catch (e: Exception) {
+            Log.w(TAG, "Aviso enableNetwork en getFirestore: ${e.message}")
+        }
+        return db
+    }
+
+    /**
+     * Asegura de forma asíncrona una sesión válida en FirebaseAuth antes de acceder a Firestore.
+     */
+    suspend fun ensureAuthAsync(): FirebaseUser? {
+        return try {
+            val auth = FirebaseAuth.getInstance()
+            val currentUser = auth.currentUser
+            if (currentUser != null) {
+                return currentUser
+            }
+            auth.signInAnonymously().await().user
+        } catch (e: Exception) {
+            Log.w(TAG, "Aviso en ensureAuthAsync: ${e.message}")
+            null
+        }
     }
 
     /**
@@ -245,6 +268,10 @@ object FirebaseManager {
     ): Result<VinculacionToken> {
         return try {
             val db = getFirestore(context)
+            try {
+                db.enableNetwork().await()
+            } catch (_: Exception) {}
+            ensureAuthAsync()
             val now = System.currentTimeMillis()
             val expiresAt = now + (durationMinutes * 60 * 1000L)
 
@@ -287,10 +314,30 @@ object FirebaseManager {
     ): Result<VinculacionToken> {
         return try {
             val db = getFirestore(context)
+            try {
+                db.enableNetwork().await()
+            } catch (netEx: Exception) {
+                Log.w(TAG, "enableNetwork antes de validatePinOrQr: ${netEx.message}")
+            }
+            ensureAuthAsync()
             val trimmed = input.trim()
             val now = System.currentTimeMillis()
 
-            var matchedDoc = db.collection(COLLECTION_VINCULACIONES).document(trimmed).get().await()
+            var matchedDoc = try {
+                db.collection(COLLECTION_VINCULACIONES).document(trimmed).get().await()
+            } catch (docEx: Exception) {
+                if (docEx.message?.contains("offline", ignoreCase = true) == true) {
+                    try {
+                        db.enableNetwork().await()
+                        kotlinx.coroutines.delay(250)
+                        db.collection(COLLECTION_VINCULACIONES).document(trimmed).get().await()
+                    } catch (_: Exception) {
+                        throw docEx
+                    }
+                } else {
+                    throw docEx
+                }
+            }
 
             // Si no se encuentra por document ID, buscar por el campo 'pin'
             if (!matchedDoc.exists()) {

@@ -96,14 +96,13 @@ class HotelFirestoreRepository(
         try {
             val db = com.example.utils.FirebaseManager.getFirestore(context)
             com.example.utils.FirebaseManager.ensureAuth()
-            val settings = FirebaseFirestoreSettings.Builder()
-                .setLocalCacheSettings(
-                    PersistentCacheSettings.newBuilder()
-                        .setSizeBytes(FirebaseFirestoreSettings.CACHE_SIZE_UNLIMITED)
-                        .build()
-                )
-                .build()
-            db.firestoreSettings = settings
+
+            // Asegurar que la red de Firestore esté explícitamente habilitada para sincronización en tiempo real
+            try {
+                db.enableNetwork()
+            } catch (e: Exception) {
+                Log.w(TAG, "Aviso al asegurar enableNetwork en initializeFirebase: ${e.message}")
+            }
 
             firestore = db
             auth = FirebaseAuth.getInstance()
@@ -112,11 +111,11 @@ class HotelFirestoreRepository(
                 status = CloudSyncStatus.ONLINE_SYNCED,
                 errorMessage = null
             )
-            Log.i(TAG, "Firebase Firestore & Auth initialized successfully.")
+            Log.i(TAG, "Firebase Firestore & Auth inicializados exitosamente.")
             startRealtimeListeners()
             startDeviceHeartbeat()
         } catch (e: Exception) {
-            Log.w(TAG, "Firebase initialized in Offline/Local Mode: ${e.message}")
+            Log.w(TAG, "Firebase inicializado en Modo Offline/Local: ${e.message}")
             _syncInfo.value = _syncInfo.value.copy(
                 status = CloudSyncStatus.OFFLINE,
                 errorMessage = "Modo Offline (Almacenamiento Local Activo)"
@@ -383,6 +382,13 @@ class HotelFirestoreRepository(
         val now = System.currentTimeMillis()
 
         try {
+            // Asegurar conexión activa a la red de Firestore
+            try {
+                firestore?.enableNetwork()?.await()
+            } catch (netEx: Exception) {
+                Log.w(TAG, "enableNetwork antes de linkDeviceByPin: ${netEx.message}")
+            }
+
             if (hotelDoc != null) {
                 val query = hotelDoc.collection("linking_codes")
                     .whereEqualTo("pin", pin.trim())
@@ -436,7 +442,32 @@ class HotelFirestoreRepository(
                 }
             }
 
-            // Fallback for local active PIN verification if offline
+            // Validar también contra la colección global 'vinculaciones' gestionada en la nube por FirebaseManager
+            val globalResult = com.example.utils.FirebaseManager.validatePinOrQr(
+                context = context,
+                input = pin,
+                deviceId = deviceId,
+                deviceName = deviceName
+            )
+            if (globalResult.isSuccess) {
+                val tokenData = globalResult.getOrNull()
+                val assignedRole = tokenData?.rol ?: "RECEPCION"
+                sessionRepo.saveDeviceAuthorization(
+                    deviceId = deviceId,
+                    role = assignedRole,
+                    email = "$assignedRole@hotelrivera.com".lowercase(),
+                    token = tokenData?.id ?: pin
+                )
+                sessionRepo.saveSession(
+                    userRole = assignedRole,
+                    userEmail = "$assignedRole@hotelrivera.com".lowercase(),
+                    userName = deviceName,
+                    authToken = tokenData?.id ?: pin
+                )
+                return Result.success("Dispositivo vinculado correctamente con rol: $assignedRole")
+            }
+
+            // Fallback para verificación de PIN local activo
             val (savedPin, expiresAt) = sessionRepo.getActivePin()
             if (savedPin == pin.trim() && expiresAt > now) {
                 val assignedRole = "RECEPCION"
@@ -452,6 +483,27 @@ class HotelFirestoreRepository(
             return Result.failure(Exception("PIN inválido o expirado. Solicite un nuevo PIN a Gerencia."))
         } catch (e: Exception) {
             Log.e(TAG, "Error linking device by PIN", e)
+            // Si hubo error de red/offline, intentar validar con FirebaseManager con recuperación de red
+            try {
+                val recoveryResult = com.example.utils.FirebaseManager.validatePinOrQr(
+                    context = context,
+                    input = pin,
+                    deviceId = deviceId,
+                    deviceName = deviceName
+                )
+                if (recoveryResult.isSuccess) {
+                    val tokenData = recoveryResult.getOrNull()
+                    val assignedRole = tokenData?.rol ?: "RECEPCION"
+                    sessionRepo.saveDeviceAuthorization(
+                        deviceId = deviceId,
+                        role = assignedRole,
+                        email = "$assignedRole@hotelrivera.com".lowercase(),
+                        token = tokenData?.id ?: pin
+                    )
+                    return Result.success("Dispositivo vinculado correctamente con rol: $assignedRole")
+                }
+            } catch (_: Exception) {}
+
             return Result.failure(Exception("Error al vincular: ${e.localizedMessage}"))
         }
     }
