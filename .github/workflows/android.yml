@@ -1,112 +1,123 @@
-name: Build Hotel Rivera APK
+name: Build & Release Android APK
 
 on:
-  workflow_dispatch:
   push:
-    branches:
-      - main
+    branches: [ "**" ]
+    tags:
+      - "v*"
+  pull_request:
+    branches: [ "**" ]
+  workflow_dispatch:
+    inputs:
+      create_release:
+        description: 'Publicar release formal con el APK adjunto'
+        required: false
+        type: boolean
+        default: false
+      tag_name:
+        description: 'Nombre de la versión (ej. v1.0.0)'
+        required: false
+        type: string
+        default: 'v1.0.0'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  build:
+  build-apk:
+    name: Compilar APK Android
     runs-on: ubuntu-latest
-    env:
-      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+    timeout-minutes: 20
+    permissions:
+      contents: write
+      packages: write
 
     steps:
-      - name: Checkout repository
+      - name: Descargar repositorio (Checkout)
         uses: actions/checkout@v4
 
-      - name: Set up JDK 21
+      - name: Configurar Java JDK 21 con Caching de Gradle
         uses: actions/setup-java@v4
         with:
-          distribution: temurin
+          distribution: 'temurin'
           java-version: '21'
+          cache: 'gradle'
 
-      - name: Verify or Setup Firebase Configuration
-        env:
-          FIREBASE_SECRET: ${{ secrets.GOOGLE_SERVICES_JSON || secrets.FIREBASE_CONFIG }}
+      - name: Instalar herramientas y SDK de Android necesarios
         run: |
-          if [ -n "$FIREBASE_SECRET" ]; then
-            echo "$FIREBASE_SECRET" > app/google-services.json
-            echo "Firebase google-services.json populated from GitHub Secrets."
-          elif [ -f "app/google-services.json" ]; then
-            echo "Firebase google-services.json already exists."
-          else
-            echo "Creating fallback google-services.json..."
-            cat << 'EOF' > app/google-services.json
-          {
-            "project_info": {
-              "project_number": "1234567890",
-              "project_id": "hotel-rivera-app",
-              "storage_bucket": "hotel-rivera-app.appspot.com"
-            },
-            "client": [
-              {
-                "client_info": {
-                  "mobilesdk_app_id": "1:1234567890:android:abcdef",
-                  "android_client_info": {
-                    "package_name": "com.aistudio.hotelrivera.app"
-                  }
-                },
-                "oauth_client": [],
-                "api_key": [
-                  {
-                    "current_key": "AIzaSyDummyKeyForBuildValidationOnly"
-                  }
-                ],
-                "services": {
-                  "appinvite_service": {
-                    "other_platform_oauth_client": []
-                  }
-                }
-              }
-            ],
-            "configuration_version": "1"
-          }
-          EOF
-            echo "Fallback google-services.json created."
+          echo "Instalando platform-tools, build-tools y licencias..."
+          yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses || true
+          $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager "platform-tools" "build-tools;34.0.0" "platforms;android-34" "platforms;android-35" || true
+
+      - name: Preparar variables de entorno y archivos base (.env)
+        run: |
+          touch .env
+          if [ ! -f .env.example ]; then
+            touch .env.example
           fi
 
-      - name: Ensure Environment Configuration
+      - name: Preparar Keystore de depuración (debugConfig)
         run: |
-          if [ ! -f ".env" ]; then
-            cp .env.example .env 2>/dev/null || touch .env
-          fi
-
-      - name: Setup Debug Keystore
-        run: |
-          if [ -f "debug.keystore.base64" ]; then
+          if [ -f debug.keystore.base64 ] && [ ! -s debug.keystore ]; then
             base64 -d debug.keystore.base64 > debug.keystore 2>/dev/null || base64 --decode debug.keystore.base64 > debug.keystore 2>/dev/null || true
           fi
-          if [ ! -f "debug.keystore" ]; then
-            keytool -genkey -v -keystore debug.keystore -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
+          if [ ! -s debug.keystore ]; then
+            keytool -genkeypair -v -keystore debug.keystore -alias androiddebugkey -storepass android -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
           fi
-          cp debug.keystore app/debug.keystore 2>/dev/null || true
 
-      - name: Ensure valid Gradle Wrapper
+      - name: Verificar estructura del proyecto y permisos
         run: |
-          chmod +x gradlew
-          if [ ! -f "gradle/wrapper/gradle-wrapper.jar" ] || ! jar tf gradle/wrapper/gradle-wrapper.jar >/dev/null 2>&1; then
-            echo "gradle-wrapper.jar is missing or corrupted. Downloading and restoring official wrapper..."
-            mkdir -p gradle/wrapper
-            curl -sSL "https://raw.githubusercontent.com/gradle/gradle/v9.3.1/gradle/wrapper/gradle-wrapper.jar" -o gradle/wrapper/gradle-wrapper.jar 2>/dev/null || true
-            if ! jar tf gradle/wrapper/gradle-wrapper.jar >/dev/null 2>&1; then
-              curl -sSL "https://services.gradle.org/distributions/gradle-9.3.1-bin.zip" -o /tmp/gradle.zip
-              unzip -q /tmp/gradle.zip -d /tmp/
-              /tmp/gradle-9.3.1/bin/gradle wrapper --gradle-version 9.3.1
-              rm -rf /tmp/gradle*
-            fi
+          if [ ! -f "./gradlew" ]; then
+            echo "Error: gradlew no existe en la raíz del proyecto."
+            exit 1
           fi
-          chmod +x gradlew
+          sed -i 's/\r$//' ./gradlew || true
+          chmod +x ./gradlew
 
-      - name: Build Debug APK
+      - name: Compilar APK con Gradle
         run: |
-          ./gradlew assembleDebug --no-daemon --no-watch-fs --stacktrace
-          ./gradlew --stop || true
+          ./gradlew :app:assembleDebug --no-daemon --stacktrace
 
-      - name: Upload APK
+      - name: Generar y verificar APK en el módulo app
+        run: |
+          mkdir -p build/dist-apk
+          APK_ORIGEN="app/build/outputs/apk/debug/app-debug.apk"
+
+          if [ ! -f "$APK_ORIGEN" ]; then
+            APK_ORIGEN=$(find app/build/outputs/apk -type f -name "*.apk" | head -n 1)
+          fi
+
+          if [ -z "$APK_ORIGEN" ] || [ ! -f "$APK_ORIGEN" ] || [ ! -s "$APK_ORIGEN" ]; then
+            echo "Error crítico: No se generó ningún archivo APK válido."
+            exit 1
+          fi
+
+          cp "$APK_ORIGEN" build/dist-apk/HotelRivera-v1.0.apk
+          ls -lh build/dist-apk/HotelRivera-v1.0.apk
+
+      - name: Publicar Artefacto descargable en GitHub Actions
         uses: actions/upload-artifact@v4
         with:
-          name: hotel-rivera-apk
-          path: app/build/outputs/apk/debug/*.apk
-          
+          name: HotelRivera-Android-APK
+          path: build/dist-apk/HotelRivera-v1.0.apk
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Publicar APK en GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master' || github.event.inputs.create_release == 'true' || github.event_name == 'workflow_dispatch'
+        uses: softprops/action-gh-release@v2
+        continue-on-error: true
+        with:
+          tag_name: ${{ github.event.inputs.tag_name || (startsWith(github.ref, 'refs/tags/v') && github.ref_name) || 'v1.0.0' }}
+          name: "Hotel Rivera ${{ github.event.inputs.tag_name || (startsWith(github.ref, 'refs/tags/v') && github.ref_name) || 'v1.0.0' }}"
+          body: |
+            ### 📱 Hotel Rivera — Instalador de Aplicación Android (APK)
+
+            Versión oficial compilada y lista para su descarga directa.
+
+            #### 📥 Descarga Directa:
+            - Pulsa sobre **`HotelRivera-v1.0.apk`** en la sección **Assets** de esta Release.
+          files: build/dist-apk/HotelRivera-v1.0.apk
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
